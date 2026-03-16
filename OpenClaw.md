@@ -21,7 +21,7 @@ Two providers, direct API keys (no subscription auth, no OpenRouter):
 |---|---|
 | High | Claude Opus 4.6 |
 | Low | GPT-5 Mini |
-| Default / general | GPT-5.4 | Claude Sonnet 4.6 |
+| Default / general | GPT-5.4 |
 | Context summarization | GPT-5.4 |
 | Complexity classifier | GPT-5 Mini (single fast call returning "high" or "low") |
 

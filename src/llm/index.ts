@@ -11,7 +11,7 @@ export const MODEL_CONTEXT_SIZES: Record<ModelId, number> = {
   'gpt-5-mini': 128_000,
 };
 
-export const DEFAULT_MODEL: ModelId = 'claude-sonnet-4-6';
+export const DEFAULT_MODEL: ModelId = 'gpt-5.4';
 
 export interface ChatMessage {
   role: 'user' | 'assistant';
@@ -58,6 +58,7 @@ function isZeroBalanceError(err: unknown, provider: 'anthropic' | 'openai'): boo
     return (
       status === 402 ||
       msg.includes('credit_balance_too_low') ||
+      msg.includes('credit balance is too low') ||
       msg.includes('insufficient_balance')
     );
   } else {
