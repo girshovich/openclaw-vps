@@ -1,34 +1,134 @@
 import { chat, DEFAULT_MODEL } from '../llm/index.js';
-import type { ChatMessage } from '../llm/index.js';
-import { appendMessage, getSessionHistory } from '../memory/sqlite.js';
+import type { LLMMessage, ToolCall } from '../llm/index.js';
+import { appendMessage, getSessionHistory, createSession } from '../memory/sqlite.js';
+import type { DbMessage } from '../memory/sqlite.js';
+import { compactIfNeeded } from './compaction.js';
+import { getToolDefinitions, executeTool } from './tools.js';
+import type { ToolContext } from './tools.js';
+import { executeMemorySearch } from '../tools/memory-search.js';
 
-function buildSystemPrompt(): string {
-  return [
-    'You are OpenClaw, a proactive AI assistant.',
+// ── System prompt ─────────────────────────────────────────────────────────────
+
+function buildSystemPrompt(memoryContext?: string): string {
+  const persona = process.env['AGENT_PERSONA'];
+  const lines = [
+    persona ?? 'You are OpenClaw, a proactive AI assistant.',
     `Current time: ${new Date().toISOString()}.`,
-    'Be helpful, direct, and thorough.',
-  ].join(' ');
+    '',
+    'Guidelines:',
+    '- Be direct and thorough.',
+    '- When you identify a multi-step task, create a task record with task_create.',
+    '- When you lack a tool or capability needed to complete a task, clearly describe',
+    '  what is missing and why, then stop or continue with what you can do.',
+    '- Always complete tasks you have started. Use the heartbeat and task system to',
+    '  resume unfinished work proactively.',
+  ];
+  if (memoryContext && memoryContext !== 'No relevant memories found.') {
+    lines.push('', 'Relevant memories from past conversations:', memoryContext);
+  }
+  return lines.join('\n');
 }
 
-export async function runTurn(sessionId: string, userMessage: string): Promise<string> {
-  // Persist the incoming user message
+// ── Message conversion ────────────────────────────────────────────────────────
+
+function historyToLLM(history: DbMessage[]): LLMMessage[] {
+  return history.map((m) => {
+    if (m.role === 'user') return { role: 'user', content: m.content };
+    if (m.role === 'tool') {
+      return { role: 'tool', toolCallId: m.tool_call_id ?? '', content: m.content };
+    }
+    // assistant
+    const meta = JSON.parse(m.metadata) as { toolCalls?: ToolCall[] };
+    if (meta.toolCalls?.length) {
+      return { role: 'assistant', content: m.content, toolCalls: meta.toolCalls };
+    }
+    return { role: 'assistant', content: m.content };
+  });
+}
+
+// ── Memory retrieval triggers ─────────────────────────────────────────────────
+
+const TEMPORAL_RE = /\b(last time|remember|before|previously|earlier|yesterday|last week|you told|you said|when we)\b/i;
+
+async function maybeRetrieveMemory(sessionId: string, message: string): Promise<string | undefined> {
+  const history = getSessionHistory(sessionId);
+  const isNewSession = history.length === 0;
+  const hasTemporalRef = TEMPORAL_RE.test(message);
+  if (!isNewSession && !hasTemporalRef) return undefined;
+  try {
+    return await executeMemorySearch(message);
+  } catch {
+    return undefined;
+  }
+}
+
+// ── Agent loop ────────────────────────────────────────────────────────────────
+
+export async function runTurn(
+  sessionId: string,
+  userMessage: string,
+  signal?: AbortSignal,
+  depth = 0,
+): Promise<string> {
   appendMessage(sessionId, { role: 'user', content: userMessage });
 
-  // Build message list for LLM from full session history
-  const history = getSessionHistory(sessionId);
-  const messages: ChatMessage[] = history
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
-    .map((m) => ({ role: m.role as 'user' | 'assistant', content: m.content }));
+  const memoryContext = await maybeRetrieveMemory(sessionId, userMessage);
+  const systemPrompt = buildSystemPrompt(memoryContext);
+  const tools = getToolDefinitions(depth);
 
-  const result = await chat(messages, DEFAULT_MODEL, buildSystemPrompt());
+  const ctx: ToolContext = {
+    sessionId,
+    depth,
+    signal,
+    spawnSubAgent: (task: string) => {
+      const subId = createSession({ parentSessionId: sessionId, depth: 1 });
+      return runTurn(subId, task, signal, 1);
+    },
+  };
 
-  // Persist assistant response
-  appendMessage(sessionId, {
-    role: 'assistant',
-    content: result.text,
-    modelUsed: result.modelUsed,
-    tokenCount: result.outputTokens,
-  });
+  // Agentic loop: call LLM, execute tools, repeat until text response
+  for (;;) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
 
-  return result.text;
+    const history = await compactIfNeeded(sessionId, DEFAULT_MODEL);
+    const messages = historyToLLM(history);
+
+    const response = await chat(messages, DEFAULT_MODEL, systemPrompt, tools, signal);
+
+    if (response.type === 'text') {
+      appendMessage(sessionId, {
+        role: 'assistant',
+        content: response.text,
+        modelUsed: response.modelUsed,
+        tokenCount: response.outputTokens,
+      });
+      return response.text;
+    }
+
+    // Save assistant message with tool calls
+    appendMessage(sessionId, {
+      role: 'assistant',
+      content: response.text,
+      modelUsed: response.modelUsed,
+      tokenCount: response.outputTokens,
+      metadata: { toolCalls: response.calls },
+    });
+
+    // Execute all tool calls — parallel for independence
+    const results = await Promise.all(
+      response.calls.map((call) => executeTool(call, ctx)),
+    );
+
+    // Enforce 30% tool result cap per the context limit
+    const limit = 128_000; // conservative
+    const cap = Math.floor(limit * 0.3 * 4); // chars
+    for (let i = 0; i < response.calls.length; i++) {
+      const call = response.calls[i]!;
+      let content = results[i] ?? '';
+      if (content.length > cap) {
+        content = content.slice(0, cap) + '\n[truncated: result exceeded 30% context cap]';
+      }
+      appendMessage(sessionId, { role: 'tool', content, toolCallId: call.id });
+    }
+  }
 }

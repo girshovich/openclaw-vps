@@ -25,4 +25,7 @@ RUN pnpm build
 # Ensure data directory exists
 RUN mkdir -p /opt/openclaw/data
 
-CMD ["node", "dist/index.js"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

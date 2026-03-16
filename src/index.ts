@@ -1,11 +1,11 @@
 import 'dotenv/config';
 import { initDb } from './memory/sqlite.js';
 import { onZeroBalance } from './llm/index.js';
+import { initQdrant } from './memory/qdrant.js';
 import { startGateway } from './gateway/index.js';
 import { startTelegramConnector } from './channels/telegram/index.js';
+import { startHeartbeat } from './heartbeat/index.js';
 
-// Alert the user via Telegram when an API key hits zero balance.
-// Uses a direct Telegram Bot API call to avoid circular dependencies.
 function registerZeroBalanceAlert(): void {
   onZeroBalance(async (provider) => {
     console.warn(`[llm] ${provider} has zero balance — switching to fallback provider`);
@@ -13,8 +13,7 @@ function registerZeroBalanceAlert(): void {
     const token = process.env['TELEGRAM_BOT_TOKEN'];
     if (!chatId || !token) return;
     try {
-      const url = `https://api.telegram.org/bot${token}/sendMessage`;
-      await fetch(url, {
+      await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -34,7 +33,11 @@ async function main(): Promise<void> {
 
   registerZeroBalanceAlert();
 
+  // Qdrant init is non-fatal — runs in background
+  initQdrant().catch((err) => console.warn('[openclaw] Qdrant init failed (will retry on use):', err));
+
   startGateway();
+  startHeartbeat();
 
   await startTelegramConnector();
 
