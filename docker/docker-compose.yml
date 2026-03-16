@@ -8,7 +8,9 @@ services:
     restart: unless-stopped
 
   openclaw:
-    build: .
+    build:
+      context: ..
+      dockerfile: Dockerfile
     networks: [openclaw-net]
     env_file: .env
     volumes:

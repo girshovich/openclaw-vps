@@ -46,6 +46,8 @@ Three layers:
 | Browser automation | VPS (headless Chromium) |
 | API keys / secrets | VPS env vars only |
 
+**Security constraint: OpenClaw is never run locally.** The codebase is edited and typechecked on the local machine, then pushed to the VPS where it runs inside Docker. API keys and the `.env` file exist only on the VPS — never on the local machine. This prevents accidental key exposure, keeps browser automation and bash tool execution off the local filesystem, and ensures Docker network isolation is always in effect.
+
 ---
 
 ## Message Routing

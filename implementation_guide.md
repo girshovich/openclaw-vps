@@ -27,6 +27,14 @@ sudo apt-get install -y xvfb
 
 ---
 
+## Security model
+
+OpenClaw is **never run locally**. The local machine is for editing and typechecking only (`pnpm typecheck`). All execution happens on the VPS inside Docker. API keys and the `.env` file live only on the VPS — they are never created or stored on the local machine.
+
+Workflow: edit → `pnpm typecheck` → push → pull on VPS → restart container.
+
+---
+
 ## Phase 2 — Project Scaffold (local machine)
 
 ```bash
