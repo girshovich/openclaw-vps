@@ -39,6 +39,14 @@ export async function startTelegramConnector(): Promise<void> {
     await bot.api.sendMessage(Number(chatId), text);
   }
 
+  // Register bot command menu (shows up when user taps "/" in Telegram)
+  await bot.api.setMyCommands([
+    { command: 'end',   description: 'End and archive the current session' },
+    { command: 'new',   description: 'Start a fresh session' },
+    { command: 'tasks', description: 'List active tasks' },
+    { command: 'help',  description: 'Show available commands' },
+  ]);
+
   // Receive responses from gateway and forward to Telegram
   ws.on('message', (data) => {
     void (async () => {
@@ -56,15 +64,30 @@ export async function startTelegramConnector(): Promise<void> {
   ws.on('error', (err) => console.error('[telegram] WebSocket error:', err));
   ws.on('close', () => console.warn('[telegram] gateway connection closed'));
 
-  // Forward incoming Telegram messages to gateway
-  bot.on('message:text', (ctx) => {
-    const inbound: GatewayInboundMessage = {
-      type: 'message',
-      channel: 'telegram',
-      channelId: String(ctx.chat.id),
-      text: ctx.message.text,
-    };
+  // Helper to forward a fixed text to the gateway
+  function forward(channelId: string, text: string): void {
+    const inbound: GatewayInboundMessage = { type: 'message', channel: 'telegram', channelId, text };
     ws.send(JSON.stringify(inbound));
+  }
+
+  // Command handlers
+  bot.command('end',   (ctx) => forward(String(ctx.chat.id), '/end'));
+  bot.command('new',   (ctx) => forward(String(ctx.chat.id), '/new'));
+  bot.command('tasks', (ctx) => forward(String(ctx.chat.id), '/tasks'));
+  bot.command('help',  async (ctx) => {
+    await ctx.reply(
+      'Available commands:\n' +
+      '/end — end and archive the current session\n' +
+      '/new — start a fresh session\n' +
+      '/tasks — list active tasks\n' +
+      '/help — show this message',
+    );
+  });
+
+  // Forward regular text messages to gateway (skip commands — handled above)
+  bot.on('message:text', (ctx) => {
+    if (ctx.message.text.startsWith('/')) return;
+    forward(String(ctx.chat.id), ctx.message.text);
   });
 
   // Start MCP server (for future tool-call path)

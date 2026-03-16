@@ -6,27 +6,26 @@ import { compactIfNeeded } from './compaction.js';
 import { getToolDefinitions, executeTool } from './tools.js';
 import type { ToolContext } from './tools.js';
 import { executeMemorySearch } from '../tools/memory-search.js';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { resolve, dirname } from 'node:path';
 
 // ── System prompt ─────────────────────────────────────────────────────────────
 
+const _promptPath = resolve(dirname(fileURLToPath(import.meta.url)), '../../Agent_Persona.md');
+let _basePrompt: string;
+try {
+  _basePrompt = readFileSync(_promptPath, 'utf8').trim();
+} catch {
+  _basePrompt = 'You are OpenClaw, a proactive personal AI assistant.\n\nGuidelines:\n- Be direct and thorough.';
+}
+
 function buildSystemPrompt(memoryContext?: string): string {
-  const persona = process.env['AGENT_PERSONA'];
-  const lines = [
-    persona ?? 'You are OpenClaw, a proactive AI assistant.',
-    `Current time: ${new Date().toISOString()}.`,
-    '',
-    'Guidelines:',
-    '- Be direct and thorough.',
-    '- When you identify a multi-step task, create a task record with task_create.',
-    '- When you lack a tool or capability needed to complete a task, clearly describe',
-    '  what is missing and why, then stop or continue with what you can do.',
-    '- Always complete tasks you have started. Use the heartbeat and task system to',
-    '  resume unfinished work proactively.',
-  ];
+  const parts = [_basePrompt, `\nCurrent time: ${new Date().toISOString()}.`];
   if (memoryContext && memoryContext !== 'No relevant memories found.') {
-    lines.push('', 'Relevant memories from past conversations:', memoryContext);
+    parts.push('\nRelevant memories from past conversations:\n' + memoryContext);
   }
-  return lines.join('\n');
+  return parts.join('\n');
 }
 
 // ── Message conversion ────────────────────────────────────────────────────────

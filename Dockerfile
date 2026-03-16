@@ -20,6 +20,7 @@ RUN npx playwright install chromium --with-deps
 # Build TypeScript
 COPY tsconfig.json ./
 COPY src ./src
+COPY Agent_Persona.md ./
 RUN pnpm build
 
 # Ensure data directory exists
