@@ -36,7 +36,12 @@ export async function startTelegramConnector(): Promise<void> {
   const bot = new Bot(token);
 
   async function sendMessage(chatId: string, text: string): Promise<void> {
-    await bot.api.sendMessage(Number(chatId), text);
+    try {
+      await bot.api.sendMessage(Number(chatId), text, { parse_mode: 'Markdown' });
+    } catch {
+      // Markdown parse error (e.g. unbalanced symbols) — send as plain text
+      await bot.api.sendMessage(Number(chatId), text);
+    }
   }
 
   // Register bot command menu (shows up when user taps "/" in Telegram)
