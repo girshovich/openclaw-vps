@@ -128,6 +128,7 @@ export function initDb(): void {
   // Migrations for existing databases
   try { db.exec(`ALTER TABLE tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE tasks ADD COLUMN last_retried_at INTEGER`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`); } catch { /* already exists */ }
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -250,6 +251,19 @@ export function replaceSessionHistory(
       now,
     );
   }
+}
+
+// ── Session cost tracking ─────────────────────────────────────────────────────
+
+export function addSessionCost(sessionId: string, deltaCost: number): void {
+  db.prepare(`UPDATE sessions SET cost_usd = cost_usd + ?, updated_at = ? WHERE session_id = ?`)
+    .run(deltaCost, Date.now(), sessionId);
+}
+
+export function getSessionCost(sessionId: string): number {
+  const row = db.prepare(`SELECT cost_usd FROM sessions WHERE session_id = ?`)
+    .get(sessionId) as { cost_usd: number } | undefined;
+  return row?.cost_usd ?? 0;
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────

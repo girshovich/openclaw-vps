@@ -1,7 +1,22 @@
-import { chat, DEFAULT_MODEL } from '../llm/index.js';
+import { chat, DEFAULT_MODEL, estimateCost } from '../llm/index.js';
 import type { LLMMessage, ToolCall } from '../llm/index.js';
-import { appendMessage, getSessionHistory, createSession } from '../memory/sqlite.js';
+import { appendMessage, getSessionHistory, createSession, addSessionCost, getSessionCost } from '../memory/sqlite.js';
 import type { DbMessage } from '../memory/sqlite.js';
+
+// ── Budget limits ─────────────────────────────────────────────────────────────
+
+const SESSION_COST_LIMIT_USD = parseFloat(process.env['SESSION_COST_LIMIT_USD'] ?? '2.00');
+const SUBAGENT_COST_LIMIT_USD = parseFloat(process.env['SUBAGENT_COST_LIMIT_USD'] ?? '1.00');
+
+export class BudgetExceededError extends Error {
+  constructor(spent: number, limit: number) {
+    super(
+      `Session cost limit reached ($${spent.toFixed(4)} of $${limit.toFixed(2)}). ` +
+      `Start a new session with /new to continue.`,
+    );
+    this.name = 'BudgetExceededError';
+  }
+}
 import { compactIfNeeded } from './compaction.js';
 import { getToolDefinitions, executeTool } from './tools.js';
 import type { ToolContext } from './tools.js';
@@ -85,14 +100,20 @@ export async function runTurn(
     },
   };
 
+  const costLimit = depth > 0 ? SUBAGENT_COST_LIMIT_USD : SESSION_COST_LIMIT_USD;
+
   // Agentic loop: call LLM, execute tools, repeat until text response
   for (;;) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    const spent = getSessionCost(sessionId);
+    if (spent >= costLimit) throw new BudgetExceededError(spent, costLimit);
 
     const history = await compactIfNeeded(sessionId, DEFAULT_MODEL);
     const messages = historyToLLM(history);
 
     const response = await chat(messages, DEFAULT_MODEL, systemPrompt, tools, signal);
+    addSessionCost(sessionId, estimateCost(response.modelUsed, response.inputTokens, response.outputTokens));
 
     if (response.type === 'text') {
       appendMessage(sessionId, {

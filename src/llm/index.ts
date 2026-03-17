@@ -11,6 +11,19 @@ export const MODEL_CONTEXT_SIZES: Record<ModelId, number> = {
   'gpt-5-mini': 128_000,
 };
 
+// Cost in USD per 1M tokens — verify against provider pricing pages
+export const MODEL_COSTS_PER_1M: Record<ModelId, { input: number; output: number }> = {
+  'claude-sonnet-4-6': { input: 3.00,  output: 15.00 },
+  'claude-opus-4-6':   { input: 15.00, output: 75.00 },
+  'gpt-5.4':           { input: 10.00, output: 30.00 },
+  'gpt-5-mini':        { input: 0.15,  output: 0.60  },
+};
+
+export function estimateCost(model: ModelId, inputTokens: number, outputTokens: number): number {
+  const rates = MODEL_COSTS_PER_1M[model] ?? { input: 10, output: 30 };
+  return (inputTokens * rates.input + outputTokens * rates.output) / 1_000_000;
+}
+
 export const DEFAULT_MODEL: ModelId = 'gpt-5.4';
 export const SUMMARIZE_MODEL: ModelId = 'gpt-5.4';
 export const CLASSIFY_MODEL: ModelId = 'gpt-5-mini';

@@ -4,7 +4,10 @@
       "Bash(pnpm install:*)",
       "Bash(git push:*)",
       "Bash(find:*)",
-      "Bash(pnpm typecheck:*)"
+      "Bash(pnpm typecheck:*)",
+      "WebSearch",
+      "WebFetch(domain:help.duffel.com)",
+      "WebFetch(domain:duffel.com)"
     ]
   }
 }
