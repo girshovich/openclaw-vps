@@ -7,7 +7,7 @@
 
 ## Current state
 - **Active phase:** Phase 2
-- **Last commit:** (pending — see Log)
+- **Last commit:** `4127188` — Phase 1: recommender.db persistence layer + Repository + seed dictionaries
 - **Notes / blockers:** _(none)_
 
 ## Phases
@@ -27,4 +27,4 @@
 _(append one line per completed phase: date · phase · commit hash · one-line outcome)_
 - 2026-06-16 · Phase 0 · `b3a81b8` · Wrote INTEGRATION_NOTES.md documenting five host hooks (tools.ts, llm/index.ts, telegram/index.ts, memory/sqlite.ts, runtime/index.ts) with verified file:line refs.
 - 2026-06-16 · Phase 0.5 · `2821a3f` · Added `src/skills/{types,registry,activator}.ts` (Skill contract, registry, sticky+additive activator), wired into `src/runtime/index.ts` turn assembly (tools + prompt fragment + tool dispatch), added `npm test` (node:test via tsx) and 4 passing tests against a stub skill fixture.
-- 2026-06-16 · Phase 1 · (pending — see next Log line) · Added `src/skills/movies/{types,db,seed,repository}.ts`: separate `recommender.db` (14 tables incl. household/user/preference/constraint/title/trope_dictionary/taxonomy_map/watch_event(+viewer)/feedback/watchlist/suppression/recommendation_log/action_log), sync `Repository` (24 methods), seed of 30 tropes + tmdb/jikan taxonomy map. 18 passing `node:test` cases incl. CRUD round-trips, unique-constraint dedup, age-frozen-at-watch, and recommender.db isolation from the session store.
+- 2026-06-16 · Phase 1 · `4127188` · Added `src/skills/movies/{types,db,seed,repository}.ts`: separate `recommender.db` (14 tables incl. household/user/preference/constraint/title/trope_dictionary/taxonomy_map/watch_event(+viewer)/feedback/watchlist/suppression/recommendation_log/action_log), sync `Repository` (24 methods), seed of 30 tropes + tmdb/jikan taxonomy map. 18 passing `node:test` cases incl. CRUD round-trips, unique-constraint dedup, age-frozen-at-watch, and recommender.db isolation from the session store.
