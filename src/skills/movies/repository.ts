@@ -70,6 +70,8 @@ export interface Repository {
 
   resolveTrope(raw: string): string | null;
   addTrope(entry: NewTropeDictionaryEntry): string;
+
+  resolveTaxonomy(source: TitleSource, term: string): string | null;
 }
 
 function toJson(arr: string[] | undefined): string {
@@ -400,6 +402,13 @@ export function createRepository(db: RecommenderDb): Repository {
         ON CONFLICT(canonical_id) DO NOTHING
       `).run(randomUUID(), entry.canonical_id, entry.label_ru, entry.label_en, toJson(entry.aliases), entry.category ?? null);
       return entry.canonical_id;
+    },
+
+    resolveTaxonomy(source: TitleSource, term: string): string | null {
+      const row = db
+        .prepare(`SELECT canonical_value FROM taxonomy_map WHERE source = ? AND source_term = ?`)
+        .get(source, term) as { canonical_value: string } | undefined;
+      return row?.canonical_value ?? null;
     },
   };
 }

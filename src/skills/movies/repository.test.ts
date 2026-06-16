@@ -176,6 +176,13 @@ test('trope dictionary seed: resolveTrope by canonical id, label, and alias; add
   assert.equal(repo.resolveTrope('testy'), 'trope:custom_one');
 });
 
+test('resolveTaxonomy maps a source genre term to its canonical value', () => {
+  seedRecommenderDb(db);
+  assert.equal(repo.resolveTaxonomy('tmdb', 'Animation'), 'genre:animation');
+  assert.equal(repo.resolveTaxonomy('jikan', 'Slice of Life'), 'theme:slice_of_life');
+  assert.equal(repo.resolveTaxonomy('tmdb', 'NotARealGenre'), null);
+});
+
 test('seed populates ~30 tropes and a taxonomy_map for both tmdb and jikan', () => {
   seedRecommenderDb(db);
   const tropeCount = db.prepare(`SELECT COUNT(*) as c FROM trope_dictionary`).get() as { c: number };
