@@ -176,6 +176,19 @@ test('trope dictionary seed: resolveTrope by canonical id, label, and alias; add
   assert.equal(repo.resolveTrope('testy'), 'trope:custom_one');
 });
 
+test('setTropes persists mapped canonical ids and stamps tropes_extracted_at', () => {
+  const title = repo.upsertTitle({ source: 'tmdb', source_id: '5', title: 'V', media_type: 'movie' });
+  assert.equal(title.tropes_extracted_at, null);
+
+  repo.setTropes(title.id, ['trope:underdog_hero', 'trope:wise_mentor']);
+  const row = db.prepare(`SELECT tropes, tropes_extracted_at FROM title WHERE id = ?`).get(title.id) as {
+    tropes: string;
+    tropes_extracted_at: number;
+  };
+  assert.deepEqual(JSON.parse(row.tropes), ['trope:underdog_hero', 'trope:wise_mentor']);
+  assert.ok(row.tropes_extracted_at > 0);
+});
+
 test('resolveTaxonomy maps a source genre term to its canonical value', () => {
   seedRecommenderDb(db);
   assert.equal(repo.resolveTaxonomy('tmdb', 'Animation'), 'genre:animation');

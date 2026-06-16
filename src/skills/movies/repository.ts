@@ -53,6 +53,7 @@ export interface Repository {
   upsertTitle(t: NewTitle): Title;
   findTitle(source: TitleSource, sourceId: string): Title | null;
   searchCachedTitles(query: string): Title[];
+  setTropes(titleId: string, tropes: string[]): void;
 
   createWatchEvent(e: NewWatchEvent): WatchEvent;
   addFeedback(f: NewFeedback): Feedback;
@@ -259,6 +260,14 @@ export function createRepository(db: RecommenderDb): Repository {
         .prepare(`SELECT * FROM title WHERE title LIKE ? OR original_title LIKE ?`)
         .all(`%${query}%`, `%${query}%`) as TitleRow[];
       return rows.map(decodeTitle);
+    },
+
+    setTropes(titleId: string, tropes: string[]): void {
+      db.prepare(`UPDATE title SET tropes = ?, tropes_extracted_at = ? WHERE id = ?`).run(
+        toJson(tropes),
+        Date.now(),
+        titleId,
+      );
     },
 
     createWatchEvent(e: NewWatchEvent): WatchEvent {
