@@ -36,13 +36,14 @@ export function migrate(db: RecommenderDb): void {
     CREATE INDEX IF NOT EXISTS idx_user_household ON user (household_id);
 
     CREATE TABLE IF NOT EXISTS user_preference (
-      id          TEXT    PRIMARY KEY NOT NULL,
-      user_id     TEXT    NOT NULL REFERENCES user(id),
-      dimension   TEXT    NOT NULL,
-      value       TEXT    NOT NULL,
-      weight      REAL    NOT NULL,
-      origin      TEXT    NOT NULL,
-      updated_at  INTEGER NOT NULL,
+      id             TEXT    PRIMARY KEY NOT NULL,
+      user_id        TEXT    NOT NULL REFERENCES user(id),
+      dimension      TEXT    NOT NULL,
+      value          TEXT    NOT NULL,
+      weight         REAL    NOT NULL,
+      origin         TEXT    NOT NULL,
+      updated_at     INTEGER NOT NULL,
+      age_at_signal  INTEGER, -- viewer's age_at_watch when this weight was last set by feedback; null for manual/onboarding (no decay)
       UNIQUE(user_id, dimension, value)
     );
     CREATE INDEX IF NOT EXISTS idx_user_preference_user ON user_preference (user_id, dimension);

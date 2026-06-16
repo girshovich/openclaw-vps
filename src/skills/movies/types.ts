@@ -48,6 +48,7 @@ export interface Preference {
   weight: number;
   origin: PreferenceOrigin;
   updated_at: number;
+  age_at_signal: number | null;
 }
 export interface NewPreference {
   user_id: string;
@@ -55,6 +56,7 @@ export interface NewPreference {
   value: string;
   weight: number;
   origin: PreferenceOrigin;
+  age_at_signal?: number;
 }
 
 export type ConstraintType =
@@ -260,4 +262,10 @@ export interface WatchEntry {
   watched_at: string;
   age_at_watch: number;
   feedback: Feedback | null;
+}
+
+export interface FeedbackContext {
+  feedback: Feedback;
+  title: Title;
+  age_at_watch: number;
 }

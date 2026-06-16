@@ -31,6 +31,7 @@ import type {
   ActionLogEntry,
   NewTropeDictionaryEntry,
   TropeDictionaryEntry,
+  FeedbackContext,
 } from './types.js';
 
 export interface Repository {
@@ -59,6 +60,7 @@ export interface Repository {
   addFeedback(f: NewFeedback): Feedback;
   markFeedbackApplied(id: string): void;
   getWatchHistory(userId: string, range?: DateRange): WatchEntry[];
+  getFeedbackContext(feedbackId: string): FeedbackContext | null;
 
   addWatchlist(w: NewWatchlist): Watchlist;
   getWatchlist(userId: string, status?: WatchlistStatus): Watchlist[];
@@ -166,11 +168,12 @@ export function createRepository(db: RecommenderDb): Repository {
 
     upsertPreference(p: NewPreference): void {
       db.prepare(`
-        INSERT INTO user_preference (id, user_id, dimension, value, weight, origin, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO user_preference (id, user_id, dimension, value, weight, origin, updated_at, age_at_signal)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(user_id, dimension, value)
-        DO UPDATE SET weight = excluded.weight, origin = excluded.origin, updated_at = excluded.updated_at
-      `).run(randomUUID(), p.user_id, p.dimension, p.value, p.weight, p.origin, Date.now());
+        DO UPDATE SET weight = excluded.weight, origin = excluded.origin, updated_at = excluded.updated_at,
+                      age_at_signal = excluded.age_at_signal
+      `).run(randomUUID(), p.user_id, p.dimension, p.value, p.weight, p.origin, Date.now(), p.age_at_signal ?? null);
     },
 
     getPreferences(userId: string): Preference[] {
@@ -334,6 +337,29 @@ export function createRepository(db: RecommenderDb): Repository {
         const fb = getFeedback.get(row.watch_event_id, userId) as (Feedback & { tags: string }) | undefined;
         return { ...row, feedback: fb ? { ...fb, tags: fromJson(fb.tags) } : null };
       });
+    },
+
+    getFeedbackContext(feedbackId: string): FeedbackContext | null {
+      const row = db
+        .prepare(`
+          SELECT f.*, we.title_id AS context_title_id, wev.age_at_watch AS context_age_at_watch
+          FROM feedback f
+          JOIN watch_event we ON we.id = f.watch_event_id
+          JOIN watch_event_viewer wev ON wev.watch_event_id = we.id AND wev.user_id = f.user_id
+          WHERE f.id = ?
+        `)
+        .get(feedbackId) as
+        | (Feedback & { tags: string; context_title_id: string; context_age_at_watch: number })
+        | undefined;
+      if (!row) return null;
+
+      const { context_title_id, context_age_at_watch, ...feedbackRow } = row;
+      const titleRow = db.prepare(`SELECT * FROM title WHERE id = ?`).get(context_title_id) as TitleRow;
+      return {
+        feedback: { ...feedbackRow, tags: fromJson(feedbackRow.tags) },
+        title: decodeTitle(titleRow),
+        age_at_watch: context_age_at_watch,
+      };
     },
 
     addWatchlist(w: NewWatchlist): Watchlist {
