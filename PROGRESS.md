@@ -7,7 +7,7 @@
 
 ## Current state
 - **Active phase:** Phase 0.5
-- **Last commit:** _(pending — see Log)_
+- **Last commit:** `b3a81b8` — Phase 0: document OpenClaw host integration hooks
 - **Notes / blockers:** _(none)_
 
 ## Phases
@@ -25,4 +25,4 @@
 
 ## Log
 _(append one line per completed phase: date · phase · commit hash · one-line outcome)_
-- 2026-06-16 · Phase 0 · (pending) · Wrote INTEGRATION_NOTES.md documenting five host hooks (tools.ts, llm/index.ts, telegram/index.ts, memory/sqlite.ts, runtime/index.ts) with verified file:line refs.
+- 2026-06-16 · Phase 0 · `b3a81b8` · Wrote INTEGRATION_NOTES.md documenting five host hooks (tools.ts, llm/index.ts, telegram/index.ts, memory/sqlite.ts, runtime/index.ts) with verified file:line refs.
