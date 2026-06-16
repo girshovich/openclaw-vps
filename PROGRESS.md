@@ -6,13 +6,13 @@
 - Plan (how): `implement-skills-movie.md`
 
 ## Current state
-- **Active phase:** Phase 0.5
-- **Last commit:** `b3a81b8` — Phase 0: document OpenClaw host integration hooks
+- **Active phase:** Phase 1
+- **Last commit:** _(pending — see Log)_
 - **Notes / blockers:** _(none)_
 
 ## Phases
 - [x] **Phase 0** — Discover host; write `INTEGRATION_NOTES.md` (five hooks w/ file:line)
-- [ ] **Phase 0.5** — Skill framework: contract + registry + activator + stub skill
+- [x] **Phase 0.5** — Skill framework: contract + registry + activator + stub skill
 - [ ] **Phase 1** — Persistence in separate `recommender.db`; Repository; seed dictionaries
 - [ ] **Phase 2** — Source adapters (TMDB, Jikan) + CatalogService
 - [ ] **Phase 3** — Trope extraction + dictionary mapping
@@ -26,3 +26,4 @@
 ## Log
 _(append one line per completed phase: date · phase · commit hash · one-line outcome)_
 - 2026-06-16 · Phase 0 · `b3a81b8` · Wrote INTEGRATION_NOTES.md documenting five host hooks (tools.ts, llm/index.ts, telegram/index.ts, memory/sqlite.ts, runtime/index.ts) with verified file:line refs.
+- 2026-06-16 · Phase 0.5 · (pending) · Added `src/skills/{types,registry,activator}.ts` (Skill contract, registry, sticky+additive activator), wired into `src/runtime/index.ts` turn assembly (tools + prompt fragment + tool dispatch), added `npm test` (node:test via tsx) and 4 passing tests against a stub skill fixture.

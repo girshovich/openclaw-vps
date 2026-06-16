@@ -21,6 +21,7 @@ import { compactIfNeeded } from './compaction.js';
 import { getToolDefinitions, executeTool } from './tools.js';
 import type { ToolContext } from './tools.js';
 import { executeMemorySearch } from '../tools/memory-search.js';
+import { activateSkills } from '../skills/activator.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';
@@ -87,8 +88,20 @@ export async function runTurn(
   appendMessage(sessionId, { role: 'user', content: userMessage });
 
   const memoryContext = await maybeRetrieveMemory(sessionId, userMessage);
-  const systemPrompt = buildSystemPrompt(memoryContext);
-  const tools = getToolDefinitions(depth);
+
+  // Skill activator: sticky + additive gating, scoped out of sub-agents
+  const activeSkills = depth === 0 ? activateSkills(sessionId, userMessage) : [];
+  const skillPromptFragment = activeSkills
+    .map((skill) => skill.systemPromptFragment)
+    .filter((fragment): fragment is string => Boolean(fragment))
+    .join('\n\n');
+  const skillToolOwner = new Map(
+    activeSkills.flatMap((skill) => skill.tools.map((t) => [t.name, skill] as const)),
+  );
+
+  const systemPrompt =
+    buildSystemPrompt(memoryContext) + (skillPromptFragment ? `\n\n${skillPromptFragment}` : '');
+  const tools = [...getToolDefinitions(depth), ...activeSkills.flatMap((skill) => skill.tools)];
 
   const ctx: ToolContext = {
     sessionId,
@@ -136,7 +149,10 @@ export async function runTurn(
 
     // Execute all tool calls — parallel for independence
     const results = await Promise.all(
-      response.calls.map((call) => executeTool(call, ctx)),
+      response.calls.map((call) => {
+        const owner = skillToolOwner.get(call.name);
+        return owner ? owner.executeTool(call, { sessionId, signal }) : executeTool(call, ctx);
+      }),
     );
 
     // Enforce 30% tool result cap per the context limit
