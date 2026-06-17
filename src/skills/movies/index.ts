@@ -419,8 +419,23 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
     ],
     tools: MOVIES_TOOLS,
     executeTool,
-    systemPromptFragment:
+    systemPromptFragment: [
       'Когда пользователь упоминает просмотр фильмов/аниме, оценки или рекомендации — используй инструменты movies skill.',
+      '',
+      'Карточка рекомендации выглядит так:',
+      '🎬 1. Название (год) · возраст · хх мин · ⭐N.N · ИСТОЧНИК',
+      'Краткое описание (до 120 символов)',
+      'Почему: совпадение N% — ✓тег ✓тег',
+      '',
+      'После показа карточек добавь подсказку: (оцените: «1 зашло», «2 так себе», «бросили 1»)',
+      'Оценки пользователя:',
+      '  «1 зашло» / «1 понравилось» → add_feedback(rating=loved)',
+      '  «2 так себе» / «2 нормально» → add_feedback(rating=ok)',
+      '  «3 не зашло» → add_feedback(rating=disliked)',
+      '  «бросили 2» → add_feedback(rating=disliked, abandoned=true)',
+      '  «в избранное 1» → manage_taste(action=add_to_watchlist, status=favorite)',
+      'При негативной оценке задай уточняющий вопрос: «страшно / скучно / длинно?»',
+    ].join('\n'),
     migrate() {
       // db schema already applied by createRecommenderDb at construction time
     },
