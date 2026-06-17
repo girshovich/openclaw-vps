@@ -188,6 +188,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
             age_rating: c.title.age_rating,
             external_rating: c.title.external_rating,
             media_type: c.title.media_type,
+            poster_url: c.title.poster_url,
             match_score: c.match_score,
             match_reasons: c.match_reasons,
           })),

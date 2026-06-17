@@ -11,8 +11,19 @@ export interface GatewayInboundMessage {
   text: string;
 }
 
+export interface InlineKeyboardButton {
+  text: string;
+  callback_data: string;
+}
+
+export interface InlineKeyboard {
+  inline_keyboard: InlineKeyboardButton[][];
+}
+
 export interface GatewayOutboundMessage {
   type: 'response';
   channelId: string;
   text: string;
+  photo?: string;
+  replyMarkup?: InlineKeyboard;
 }

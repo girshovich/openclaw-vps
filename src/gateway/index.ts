@@ -1,5 +1,6 @@
 import { WebSocketServer } from 'ws';
 import type { GatewayInboundMessage, GatewayOutboundMessage, ChannelType } from '../types.js';
+import { extractPhoto } from './photo-marker.js';
 import { enqueue } from './lane-queue.js';
 import { runTurn, BudgetExceededError } from '../runtime/index.js';
 import { findOrCreateSession, createSession, getSessionHistory, updateSessionStatus, resetTaskRetries } from '../memory/sqlite.js';
@@ -79,7 +80,13 @@ export function startGateway(): WebSocketServer {
           // Update session to active on any message
           updateSessionStatus(sessionId, 'active');
 
-          const outbound: GatewayOutboundMessage = { type: 'response', channelId, text: responseText };
+          const { text: outText, photo } = extractPhoto(responseText);
+          const outbound: GatewayOutboundMessage = {
+            type: 'response',
+            channelId,
+            text: outText,
+            ...(photo !== undefined && { photo }),
+          };
           ws.send(JSON.stringify(outbound));
         } catch (err) {
           console.error('[gateway] error processing message:', err);

@@ -1,7 +1,8 @@
 import { Bot } from 'grammy';
 import { WebSocket } from 'ws';
-import type { GatewayInboundMessage, GatewayOutboundMessage } from '../../types.js';
+import type { GatewayInboundMessage, GatewayOutboundMessage, InlineKeyboard } from '../../types.js';
 import { startTelegramMcpServer } from './mcp-server.js';
+import { buildRecommendationButtons, callbackDataToNL, detectCardCount } from '../../skills/movies/buttons.js';
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -35,12 +36,29 @@ export async function startTelegramConnector(): Promise<void> {
 
   const bot = new Bot(token);
 
-  async function sendMessage(chatId: string, text: string): Promise<void> {
+  async function sendMessage(chatId: string, text: string, replyMarkup?: InlineKeyboard): Promise<void> {
     try {
-      await bot.api.sendMessage(Number(chatId), text, { parse_mode: 'Markdown' });
+      await bot.api.sendMessage(Number(chatId), text, {
+        parse_mode: 'Markdown',
+        ...(replyMarkup !== undefined && { reply_markup: replyMarkup }),
+      });
     } catch {
       // Markdown parse error (e.g. unbalanced symbols) — send as plain text
-      await bot.api.sendMessage(Number(chatId), text);
+      await bot.api.sendMessage(Number(chatId), text, {
+        ...(replyMarkup !== undefined && { reply_markup: replyMarkup }),
+      });
+    }
+  }
+
+  async function sendPhoto(chatId: string, photoUrl: string, caption?: string, replyMarkup?: InlineKeyboard): Promise<void> {
+    try {
+      await bot.api.sendPhoto(Number(chatId), photoUrl, {
+        ...(caption !== undefined && { caption }),
+        ...(replyMarkup !== undefined && { reply_markup: replyMarkup }),
+      });
+    } catch {
+      // Photo failed — fall back to text
+      if (caption) await sendMessage(chatId, caption, replyMarkup);
     }
   }
 
@@ -57,8 +75,17 @@ export async function startTelegramConnector(): Promise<void> {
     void (async () => {
       try {
         const msg = JSON.parse(data.toString()) as GatewayOutboundMessage;
-        if (msg.type === 'response') {
-          await sendMessage(msg.channelId, msg.text);
+        if (msg.type !== 'response') return;
+
+        const cardCount = detectCardCount(msg.text);
+        const replyMarkup: InlineKeyboard | undefined = cardCount > 0
+          ? { inline_keyboard: buildRecommendationButtons(cardCount) }
+          : undefined;
+
+        if (msg.photo) {
+          await sendPhoto(msg.channelId, msg.photo, msg.text, replyMarkup);
+        } else {
+          await sendMessage(msg.channelId, msg.text, replyMarkup);
         }
       } catch (err) {
         console.error('[telegram] error handling gateway response:', err);
@@ -93,6 +120,15 @@ export async function startTelegramConnector(): Promise<void> {
   bot.on('message:text', (ctx) => {
     if (ctx.message.text.startsWith('/')) return;
     forward(String(ctx.chat.id), ctx.message.text);
+  });
+
+  // Route inline button callbacks back to the agent as NL text
+  bot.on('callback_query:data', async (ctx) => {
+    await ctx.answerCallbackQuery();
+    const nl = callbackDataToNL(ctx.callbackQuery.data);
+    if (nl && ctx.chat) {
+      forward(String(ctx.chat.id), nl);
+    }
   });
 
   // Start MCP server (for future tool-call path)
