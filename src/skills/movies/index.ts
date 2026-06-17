@@ -359,10 +359,12 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
 
         const raw = await callLlm(
           `Parse this description of household members: "${inp['members_free_text'] as string}"\n` +
-          `Return ONLY valid JSON: {"members": [{"name": string, "age": number, "self": boolean}]}\n` +
+          `Return ONLY valid JSON: {"members": [{"name": string, "birth_date": string|null, "age": number|null, "self": boolean}]}\n` +
+          `"birth_date": ISO date YYYY-MM-DD if any date of birth is given (convert from any format, e.g. 01.01.1986 → 1986-01-01), otherwise null.\n` +
+          `"age": current age as integer only when no birth date is available, otherwise null.\n` +
           `"self": true if this is the speaker (e.g. "я"). Output ONLY the JSON object.`,
         );
-        let members: Array<{ name: string; age: number; self: boolean }> = [];
+        let members: Array<{ name: string; birth_date: string | null; age: number | null; self: boolean }> = [];
         try {
           const match = /\{[\s\S]*\}/.exec(raw);
           if (match) members = (JSON.parse(match[0]) as { members: typeof members }).members ?? [];
@@ -377,7 +379,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           repo.createUser({
             household_id: household.id,
             name: m.name,
-            age_static: m.age,
+            ...(m.birth_date ? { birth_date: m.birth_date } : m.age !== null ? { age_static: m.age } : {}),
             include_in_recommendations: m.self ? (recommendForAdult ? 1 : 0) : 1,
           }),
         );

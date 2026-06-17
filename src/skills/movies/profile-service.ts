@@ -39,9 +39,9 @@ function buildPrompt(freeText: string, lovedTitles: string[]): string {
 Extract taste preferences and hard constraints implied by this. Respond with ONLY JSON shaped:
 { "preferences": [{ "dimension": "genre"|"theme"|"trope"|"tone"|"pace"|"runtime"|"source_type", "value": string, "weight": number }],
   "constraints": [{ "type": "trigger"|"max_runtime"|"min_age_rating"|"max_age_rating"|"no_subtitles"|"exclude_source"|"exclude_trope"|"exclude_theme", "value": string }] }
-"value" must be a normalized id like "genre:adventure", "trope:underdog_hero", "theme:friendship", or
-"trigger:parent_separation", "max_runtime:90". "weight" is a float from -1.0 to 1.0 (positive = likes,
-negative = dislikes/avoid). Output nothing but the JSON object.`;
+Preference "value" MUST start with the dimension name and a colon: dimension "genre" → "genre:adventure" (never just "adventure"); dimension "trope" → "trope:underdog_hero"; dimension "theme" → "theme:friendship".
+Constraint "value": "trigger:parent_separation", "max_runtime:90", etc.
+"weight" is a float from -1.0 to 1.0 (positive = likes, negative = dislikes/avoid). Output nothing but the JSON object.`;
 }
 
 function parseExtraction(raw: string): Extraction {
@@ -56,6 +56,7 @@ function parseExtraction(raw: string): Extraction {
             p !== null &&
             DIMENSIONS.includes((p as ExtractedPreference).dimension) &&
             typeof (p as ExtractedPreference).value === 'string' &&
+            (p as ExtractedPreference).value.startsWith(`${(p as ExtractedPreference).dimension}:`) &&
             typeof (p as ExtractedPreference).weight === 'number',
         )
       : [];

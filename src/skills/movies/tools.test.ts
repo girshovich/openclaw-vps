@@ -194,13 +194,24 @@ test('recommend returns candidates array (may be empty with no cached titles)', 
 
 test('setup parses members and creates household + users', async () => {
   const mockLlm = async () =>
-    JSON.stringify({ members: [{ name: 'Михаил', age: 38, self: true }, { name: 'Тимур', age: 6, self: false }] });
+    JSON.stringify({ members: [{ name: 'Михаил', birth_date: null, age: 38, self: true }, { name: 'Тимур', birth_date: null, age: 6, self: false }] });
   const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
 
   const res = JSON.parse(await testSkill.executeTool(makeCall('setup', { members_free_text: 'я Михаил 38 и сын Тимур 6' }), ctx)) as { household: { id: string }; created_users: unknown[] };
   assert.ok(res.household.id);
   assert.equal(res.created_users.length, 2);
   assert.ok(repo.getHousehold()?.onboarded === 1);
+});
+
+test('setup stores birth_date when LLM returns it instead of age', async () => {
+  const mockLlm = async () =>
+    JSON.stringify({ members: [{ name: 'Михаил', birth_date: '1986-01-01', age: null, self: true }] });
+  const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
+
+  await testSkill.executeTool(makeCall('setup', { members_free_text: 'я Михаил 01.01.1986' }), ctx);
+  const user = repo.listUsers()[0]!;
+  assert.equal(user.birth_date, '1986-01-01');
+  assert.equal(user.age_static, null);
 });
 
 test('setup returns error if household already exists', async () => {
