@@ -156,8 +156,10 @@ export async function runTurn(
       metadata: { toolCalls: response.calls },
     });
 
-    // Execute all tool calls — parallel for independence
-    const results = await Promise.all(
+    // Execute all tool calls — parallel for independence.
+    // allSettled guarantees every tool_call_id gets a response message even if one throws,
+    // preventing the "tool_calls without responses" session corruption.
+    const settled = await Promise.allSettled(
       response.calls.map((call) => {
         const owner = skillToolOwner.get(call.name);
         return owner ? owner.executeTool(call, { sessionId, signal }) : executeTool(call, ctx);
@@ -169,7 +171,10 @@ export async function runTurn(
     const cap = Math.floor(limit * 0.3 * 4); // chars
     for (let i = 0; i < response.calls.length; i++) {
       const call = response.calls[i]!;
-      let content = results[i] ?? '';
+      const result = settled[i]!;
+      let content = result.status === 'fulfilled'
+        ? result.value
+        : JSON.stringify({ error: result.reason instanceof Error ? result.reason.message : String(result.reason) });
       if (content.length > cap) {
         content = content.slice(0, cap) + '\n[truncated: result exceeded 30% context cap]';
       }

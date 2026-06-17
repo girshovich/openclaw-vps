@@ -46,11 +46,13 @@ export function startGateway(): WebSocketServer {
   wss.on('connection', (ws) => {
     ws.on('message', (data) => {
       void (async () => {
+        let channelId: string | undefined;
         try {
           const msg = JSON.parse(data.toString()) as GatewayInboundMessage;
           if (msg.type !== 'message') return;
 
-          const { channel, channelId, text } = msg;
+          const { channel, text } = msg;
+          channelId = msg.channelId;
           let sessionId: string;
           let responseText: string;
 
@@ -90,6 +92,15 @@ export function startGateway(): WebSocketServer {
           ws.send(JSON.stringify(outbound));
         } catch (err) {
           console.error('[gateway] error processing message:', err);
+          if (channelId) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const outbound: GatewayOutboundMessage = {
+              type: 'response',
+              channelId,
+              text: `⚠️ Что-то пошло не так: ${errMsg}\n\nНачните новую сессию командой /new.`,
+            };
+            ws.send(JSON.stringify(outbound));
+          }
         }
       })();
     });

@@ -77,7 +77,7 @@ test('resolveTitle routes mediaType=anime to the jikan adapter', async () => {
   assert.equal(result.match.title, 'Cowboy Bebop');
 });
 
-test('resolveTitle returns alternatives for ambiguous queries and throws when nothing is found', async () => {
+test('resolveTitle returns alternatives for ambiguous queries', async () => {
   const tmdb = stubAdapter('tmdb', [
     { source: 'tmdb', sourceId: '1', title: 'Aladdin', year: 1992, mediaType: 'movie', genres: [], themes: [] },
     { source: 'tmdb', sourceId: '2', title: 'Aladdin', year: 2019, mediaType: 'movie', genres: [], themes: [] },
@@ -89,7 +89,32 @@ test('resolveTitle returns alternatives for ambiguous queries and throws when no
   assert.equal(result.match.year, 1992);
   assert.equal(result.alternatives.length, 1);
   assert.equal(result.alternatives[0]!.year, 2019);
+});
 
-  const emptyCatalog = createCatalogService(repo, { tmdb: stubAdapter('tmdb', []), jikan });
-  await assert.rejects(() => emptyCatalog.resolveTitle('not a real movie title xyz'), /No results found/);
+test('resolveTitle falls back to Jikan when TMDB returns nothing', async () => {
+  const tmdb = stubAdapter('tmdb', []);
+  const jikan = stubAdapter('jikan', [
+    { source: 'jikan', sourceId: '1', title: 'Spirited Away', mediaType: 'anime', genres: [], themes: [] },
+  ]);
+  const catalog = createCatalogService(repo, { tmdb, jikan });
+
+  const result = await catalog.resolveTitle('spirited away');
+  assert.equal(result.match.source, 'jikan');
+  assert.equal(result.match.title, 'Spirited Away');
+});
+
+test('resolveTitle creates a manual stub when both adapters return nothing', async () => {
+  const catalog = createCatalogService(repo, {
+    tmdb: stubAdapter('tmdb', []),
+    jikan: stubAdapter('jikan', []),
+  });
+
+  const result = await catalog.resolveTitle('Советский мультфильм про зайца');
+  assert.equal(result.match.source, 'manual');
+  assert.equal(result.match.title, 'Советский мультфильм про зайца');
+  assert.equal(result.alternatives.length, 0);
+
+  // Second call returns the same stub from cache without hitting adapters
+  const result2 = await catalog.resolveTitle('Советский мультфильм про зайца');
+  assert.equal(result2.match.id, result.match.id);
 });

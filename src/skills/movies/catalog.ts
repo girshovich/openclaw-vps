@@ -42,12 +42,28 @@ export function createCatalogService(repo: Repository, adapters: CatalogAdapters
         return { match: cached[0]!, alternatives: cached.slice(1) };
       }
 
-      const adapter = opts?.mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
-      const found = await adapter.search(query, opts?.mediaType ? { mediaType: opts.mediaType } : undefined);
-      if (found.length === 0) throw new Error(`No results found for "${query}"`);
+      const primary = opts?.mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
+      const fallback = opts?.mediaType === 'anime' ? null : adapters.jikan;
+
+      let found = await primary.search(query, opts?.mediaType ? { mediaType: opts.mediaType } : undefined);
+
+      if (found.length === 0 && fallback) {
+        found = await fallback.search(query);
+      }
+
+      if (found.length === 0) {
+        const stub = repo.upsertTitle({
+          source: 'manual',
+          source_id: query.toLowerCase().trim().replace(/\s+/g, '-'),
+          title: query,
+          media_type: opts?.mediaType ?? 'movie',
+        });
+        return { match: stub, alternatives: [] };
+      }
 
       const [top, ...rest] = found;
-      const detailed = await adapter.getDetails(top!.sourceId);
+      const detailAdapter = top!.source === 'jikan' ? adapters.jikan : adapters.tmdb;
+      const detailed = await detailAdapter.getDetails(top!.sourceId);
       const match = repo.upsertTitle(toNewTitle(detailed));
       const alternatives = rest.map((r) => repo.upsertTitle(toNewTitle(r)));
       return { match, alternatives };
