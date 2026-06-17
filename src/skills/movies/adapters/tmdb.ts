@@ -1,6 +1,11 @@
 import type { NormalizedTitle, SourceAdapter, DiscoverOpts } from './types.js';
 import { normalizeAgeRating } from './age-rating.js';
 
+// Map a household language code to a TMDB language tag (e.g. "ru" → "ru-RU").
+function tmdbLanguage(code: string): string {
+  return code.includes('-') ? code : `${code}-${code.toUpperCase()}`;
+}
+
 export interface TmdbAdapterOptions {
   apiKey?: string;
   resolveGenre: (term: string) => string | null;
@@ -69,6 +74,7 @@ export function createTmdbAdapter(opts: TmdbAdapterOptions): SourceAdapter {
     const synopsis = raw.overview || undefined;
     const poster = posterUrl(raw.poster_path);
     const externalRating = raw.vote_average ?? undefined;
+    const popularity = raw.popularity ?? undefined;
     return {
       source: 'tmdb',
       sourceId: String(raw.id),
@@ -81,6 +87,7 @@ export function createTmdbAdapter(opts: TmdbAdapterOptions): SourceAdapter {
       ...(synopsis !== undefined && { synopsis }),
       ...(poster !== undefined && { posterUrl: poster }),
       ...(externalRating !== undefined && { externalRating }),
+      ...(popularity !== undefined && { popularity }),
     };
   }
 
@@ -145,10 +152,28 @@ export function createTmdbAdapter(opts: TmdbAdapterOptions): SourceAdapter {
     source: 'tmdb',
 
     async search(query, searchOpts) {
-      const mediaType = searchOpts?.mediaType === 'series' ? 'series' : 'movie';
-      const endpoint = mediaType === 'series' ? '/search/tv' : '/search/movie';
-      const data = await callApi(endpoint, { query });
-      return (data.results ?? []).map((r: TmdbRaw) => normalizeSearchResult(r, mediaType));
+      const language = searchOpts?.language ? tmdbLanguage(searchOpts.language) : undefined;
+      const requested = searchOpts?.mediaType;
+
+      // When the caller knows the media type, hit the dedicated endpoint and can
+      // narrow by release year. Otherwise multi-search so series are reachable too.
+      if (requested === 'movie' || requested === 'series') {
+        const endpoint = requested === 'series' ? '/search/tv' : '/search/movie';
+        const params: Record<string, string> = { query };
+        if (language) params['language'] = language;
+        if (searchOpts?.year !== undefined) {
+          params[requested === 'series' ? 'first_air_date_year' : 'primary_release_year'] = String(searchOpts.year);
+        }
+        const data = await callApi(endpoint, params);
+        return (data.results ?? []).map((r: TmdbRaw) => normalizeSearchResult(r, requested));
+      }
+
+      const params: Record<string, string> = { query };
+      if (language) params['language'] = language;
+      const data = await callApi('/search/multi', params);
+      return (data.results ?? [])
+        .filter((r: TmdbRaw) => r.media_type === 'movie' || r.media_type === 'tv')
+        .map((r: TmdbRaw) => normalizeSearchResult(r, r.media_type === 'tv' ? 'series' : 'movie'));
     },
 
     async getDetails(sourceId) {

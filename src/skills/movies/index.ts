@@ -19,6 +19,18 @@ import type { User, Preference, RecommendationOutcome } from './types.js';
 const TODAY = (): string => new Date().toISOString().slice(0, 10);
 const DISMISSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
+// Item 3: expand a numbered range like "Star Wars 1-9" into its installments
+// ("Star Wars 1" … "Star Wars 9"). Non-range titles pass through unchanged.
+function expandRange(title: string): string[] {
+  const m = /^(.*?)\s*(\d+)\s*[-–—]\s*(\d+)\s*$/.exec(title);
+  if (!m) return [title];
+  const base = m[1]!.trim();
+  const start = Number(m[2]);
+  const end = Number(m[3]);
+  if (!base || end < start || end - start > 50) return [title];
+  return Array.from({ length: end - start + 1 }, (_, i) => `${base} ${start + i}`);
+}
+
 const MOVIES_TOOLS: ToolDefinition[] = [
   {
     name: 'recommend',
@@ -43,9 +55,10 @@ const MOVIES_TOOLS: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        title_query: { type: 'string', description: 'Title name or partial name to resolve.' },
+        title_query: { type: 'string', description: 'Title name or partial name to resolve. Pass the user\'s original-language string verbatim — never translate it.' },
         viewer_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of viewers who watched.' },
         watched_at: { type: 'string', description: 'ISO date (YYYY-MM-DD) of when it was watched. Default: today.' },
+        year: { type: 'number', description: 'Release year, when the user gives one. Disambiguates sequels/remakes.' },
       },
       required: ['title_query', 'viewer_ids'],
     },
@@ -149,6 +162,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
   const callLlm = deps.callLlm ?? (async (p: string) => (await simpleChat(p, CLASSIFY_MODEL)).text);
 
   const repo = createRepository(db);
+  const householdLanguage = (): string | undefined => repo.getHousehold()?.language;
   const profileService = createProfileService(repo, { callLlm });
   const learningService = createLearningService(repo);
   const recommendationService = createRecommendationService(repo, catalogService);
@@ -188,8 +202,13 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         const titleQuery = inp['title_query'] as string;
         const viewerIds = inp['viewer_ids'] as string[];
         const watchedAt = inp['watched_at'] as string | undefined;
+        const year = inp['year'] as number | undefined;
 
-        const { match, alternatives } = await catalogService.resolveTitle(titleQuery);
+        const { match, alternatives } = await catalogService.resolveTitle(titleQuery, {
+          ...(householdLanguage() !== undefined && { language: householdLanguage()! }),
+          ...(year !== undefined && { year }),
+        });
+        if (!match) return JSON.stringify({ error: 'could_not_resolve', query: titleQuery });
         const allUsers = repo.listUsers();
         const viewers = viewerIds
           .map((id) => allUsers.find((u) => u.id === id))
@@ -210,7 +229,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           }
         }
 
-        const result: Record<string, unknown> = { watch_event_id: event.id, resolved_title: match.title };
+        const result: Record<string, unknown> = { watch_event_id: event.id, resolved_title: match.title, undo_available: true };
         if (alternatives.length > 0) result['ambiguous_matches'] = alternatives.map((t) => t.title);
         return JSON.stringify(result);
       }
@@ -235,7 +254,10 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
             watchEventId = histMatch.watch_event_id;
             titleId = histMatch.title_id;
           } else {
-            const { match } = await catalogService.resolveTitle(titleQuery);
+            const { match } = await catalogService.resolveTitle(titleQuery, {
+              ...(householdLanguage() !== undefined && { language: householdLanguage()! }),
+            });
+            if (!match) return JSON.stringify({ error: 'No watch event found for this title and viewer.' });
             titleId = match.id;
             const entry = [...history].reverse().find((e) => e.title_id === match.id);
             if (!entry) return JSON.stringify({ error: 'No watch event found for this title and viewer.' });
@@ -274,7 +296,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           }
         }
 
-        return JSON.stringify({ feedback_id: feedback.id, profile_updated: true });
+        return JSON.stringify({ feedback_id: feedback.id, profile_updated: true, undo_available: true });
       }
 
       // ── manage_viewers ───────────────────────────────────────────────────────
@@ -334,48 +356,60 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           if (!freeText) return JSON.stringify({ error: 'free_text is required for set_preferences.' });
           const lovedTitleNames = inp['loved_titles'] as string[] | undefined;
 
-          const loggedTitles: string[] = [];
-          const failedTitles: string[] = [];
-
-          if (lovedTitleNames && lovedTitleNames.length > 0) {
-            const user = repo.listUsers().find((u) => u.id === userId);
-            if (user) {
-              const seenIds = new Set(repo.getWatchHistory(userId).map((e) => e.title_id));
-              // M4: removed inner try/catch so Promise.allSettled captures failures
-              const settleResults = await Promise.allSettled(
-                lovedTitleNames.map(async (name) => {
-                  const { match } = await catalogService.resolveTitle(name);
-                  if (seenIds.has(match.id)) return;
-                  const event = repo.createWatchEvent({
-                    title_id: match.id,
-                    viewers: [{ user_id: userId, age_at_watch: computeCurrentAge(user) ?? 0 }],
-                  });
-                  // H4: snapshot prefs before applying
-                  const prefsSnapshot: Preference[] = repo.getPreferences(userId);
-                  const feedback = repo.addFeedback({ watch_event_id: event.id, user_id: userId, rating: 'loved', abandoned: 0 });
-                  learningService.applyFeedback(feedback.id);
-                  // H4: push both actions so each can be individually undone
-                  repo.pushAction({ action_type: 'watch_logged', entity_ref: `watch_event:${event.id}`, previous_state: null });
-                  repo.pushAction({ action_type: 'feedback_added', entity_ref: `feedback:${feedback.id}`, previous_state: { userId, prefsSnapshot } });
-                  loggedTitles.push(match.title);
-                }),
-              );
-              // M4: report which titles couldn't be resolved
-              settleResults.forEach((r, i) => {
-                if (r.status === 'rejected') failedTitles.push(lovedTitleNames[i]!);
-              });
-            }
-          }
-
+          // Free-text preferences are safe to apply immediately — only the
+          // watched+loved writes are gated behind confirmation (Item 2).
           const extracted = await profileService.setPreferences(userId, freeText, lovedTitleNames);
           const summary = profileService.summary(userId);
-          const result: Record<string, unknown> = { profile_summary: summary, extracted, logged_as_watched: loggedTitles };
-          if (failedTitles.length > 0) result['failed_titles'] = failedTitles;
+          const result: Record<string, unknown> = { profile_summary: summary, extracted };
+
+          if (lovedTitleNames && lovedTitleNames.length > 0) {
+            const lang = householdLanguage();
+            const seenIds = new Set(repo.getWatchHistory(userId).map((e) => e.title_id));
+            // Item 3: expand numbered ranges into installments before resolving.
+            const queries = lovedTitleNames.flatMap(expandRange);
+
+            interface PreviewItem { title_query: string; name: string; year: number | null; media_type: string; already_watched: boolean }
+            const confident: PreviewItem[] = [];
+            const ambiguous: Array<PreviewItem & { alternatives: Array<{ name: string; year: number | null }> }> = [];
+            const unresolved: string[] = [];
+
+            await Promise.all(
+              queries.map(async (name) => {
+                try {
+                  const r = await catalogService.resolveTitle(name, lang !== undefined ? { language: lang } : undefined);
+                  if (!r.match) { unresolved.push(name); return; }
+                  const item: PreviewItem = {
+                    title_query: name,
+                    name: r.match.title,
+                    year: r.match.year,
+                    media_type: r.match.media_type,
+                    already_watched: seenIds.has(r.match.id),
+                  };
+                  if (r.status === 'ambiguous') {
+                    ambiguous.push({ ...item, alternatives: r.alternatives.map((a) => ({ name: a.title, year: a.year })) });
+                  } else {
+                    confident.push(item);
+                  }
+                } catch {
+                  unresolved.push(name);
+                }
+              }),
+            );
+
+            // Item 2: preview only — no watch events or feedback are written here.
+            // The agent confirms with the user, then commits via log_watch + add_feedback.
+            result['preview'] = { confident, ambiguous, unresolved };
+            result['confirm_required'] = true;
+          }
+
           return JSON.stringify(result);
         }
         if (action === 'add_to_watchlist') {
           const titleQuery = inp['title_query'] as string;
-          const { match, alternatives } = await catalogService.resolveTitle(titleQuery);
+          const { match, alternatives } = await catalogService.resolveTitle(titleQuery, {
+            ...(householdLanguage() !== undefined && { language: householdLanguage()! }),
+          });
+          if (!match) return JSON.stringify({ error: 'could_not_resolve', query: titleQuery });
           const entry = repo.addWatchlist({
             user_id: userId,
             title_id: match.id,
@@ -524,13 +558,22 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
       '== Logging watched / liked titles ==',
       'When the user names specific titles they liked or watched — ALWAYS extract those titles into the loved_titles array. NEVER bury title names inside free_text — they will not be recorded as watch history.',
       'Split mixed messages: titles → loved_titles, qualitative statements and constraints → free_text.',
+      'Pass each title in the user\'s ORIGINAL language exactly as written — never translate it (e.g. keep "Как приручить дракона", do NOT send "How to Train Your Dragon"). If the user states a year, pass it.',
       'Example: "сыну нравятся Звёздные Войны, One Piece, боится страшного"',
       '→ set_preferences(user_id=..., loved_titles=["Звёздные Войны", "One Piece"], free_text="боится страшного")',
       'NOT: set_preferences(user_id=..., free_text="сыну нравятся Звёздные Войны, One Piece, боится страшного")',
       '',
       'Use set_preferences when the user is describing general taste (with or without named titles as examples).',
-      'Use log_watch + add_feedback(rating=loved) when recording a specific watch event (user says they just watched something, or gives an explicit rating).',
-      'For franchises or numbered series ("episodes 1–9", "all parts", "seasons 1–3") — emit one log_watch call per installment in a single response. They execute in parallel so latency is the same as one call.',
+      'set_preferences does NOT record watches — it returns a preview { confident, ambiguous, unresolved } and writes nothing.',
+      'After a preview: show the list as "Название (год)", one line each. Then ONE short confirm step — "записать эти? / поправить?". Do not write apologies or paragraphs.',
+      'On confirmation, commit each confident title (and each ambiguous title the user picked) by calling log_watch + add_feedback(rating=loved) for it. Skip any already_watched=true title.',
+      'For ambiguous entries, offer the alternatives and ask which; for unresolved entries, ask the user for the year or original title. Never invent a match.',
+      'Use log_watch + add_feedback(rating=loved) directly when the user records a specific watch event or gives an explicit rating.',
+      'For franchises or numbered series ("episodes 1–9", "all parts", "seasons 1–3") — the preview already lists each installment; commit one log_watch call per installment in a single response. They execute in parallel so latency is the same as one call.',
+      '',
+      '== Undo ==',
+      'Every committed watch/feedback/viewer write can be reverted with undo_last — it works even across sessions, including actions from a previous chat. NEVER tell the user you have no tool to edit or undo; call undo_last instead.',
+      'After committing a watch or rating, offer a one-tap "↩️ Отменить" so a wrong entry can be removed immediately.',
       '',
       '== Age-appropriateness ==',
       'Lean toward titles that fit the youngest viewer — each candidate includes age_rating, and you can also judge from the title, synopsis, and tropes. This is a soft preference: order and frame accordingly, but never hard-drop or hide a title solely because of its rating. If you surface something more grown-up, just flag it (e.g. "чуть взрослее").',

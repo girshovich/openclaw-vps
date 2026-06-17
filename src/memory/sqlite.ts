@@ -134,6 +134,7 @@ export function initDb(): void {
   try { db.exec(`ALTER TABLE tasks ADD COLUMN last_retried_at INTEGER`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN active_skills TEXT NOT NULL DEFAULT '[]'`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN cost_warned INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -278,6 +279,16 @@ export function getSessionCost(sessionId: string): number {
   const row = db.prepare(`SELECT cost_usd FROM sessions WHERE session_id = ?`)
     .get(sessionId) as { cost_usd: number } | undefined;
   return row?.cost_usd ?? 0;
+}
+
+export function getSessionCostWarned(sessionId: string): boolean {
+  const row = db.prepare(`SELECT cost_warned FROM sessions WHERE session_id = ?`)
+    .get(sessionId) as { cost_warned: number } | undefined;
+  return (row?.cost_warned ?? 0) === 1;
+}
+
+export function markSessionCostWarned(sessionId: string): void {
+  db.prepare(`UPDATE sessions SET cost_warned = 1 WHERE session_id = ?`).run(sessionId);
 }
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────

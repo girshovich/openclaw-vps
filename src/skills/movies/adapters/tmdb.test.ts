@@ -27,7 +27,7 @@ test('TmdbAdapter.search normalizes a movie result (genres are resolved at getDe
   }) as unknown as typeof fetch;
   const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
 
-  const results = await adapter.search('matrix');
+  const results = await adapter.search('matrix', { mediaType: 'movie' });
   assert.equal(results.length, 1);
   const r = results[0]!;
   assert.equal(r.sourceId, '603');
@@ -37,6 +37,40 @@ test('TmdbAdapter.search normalizes a movie result (genres are resolved at getDe
   assert.deepEqual(r.genres, []);
   assert.ok(calls[0]!.includes('/search/movie'));
   assert.ok(calls[0]!.includes('api_key=test-key'));
+});
+
+test('TmdbAdapter.search uses /search/multi when no media type is given and maps tv→series, dropping person', async () => {
+  let requestedUrl = '';
+  const fetchImpl = (async (url: string | URL | Request) => {
+    requestedUrl = String(url);
+    return jsonResponse({
+      results: [
+        { id: 1, media_type: 'movie', title: 'A Movie', release_date: '2010-01-01' },
+        { id: 2, media_type: 'tv', name: 'A Series', first_air_date: '2023-01-01' },
+        { id: 3, media_type: 'person', name: 'Some Actor' },
+      ],
+    });
+  }) as unknown as typeof fetch;
+  const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
+
+  const results = await adapter.search('one piece');
+  assert.ok(requestedUrl.includes('/search/multi'), 'no media type must use multi-search');
+  assert.equal(results.length, 2, 'person results must be dropped');
+  assert.equal(results.find((x) => x.sourceId === '1')!.mediaType, 'movie');
+  assert.equal(results.find((x) => x.sourceId === '2')!.mediaType, 'series');
+});
+
+test('TmdbAdapter.search forwards language and release year to the TMDB query', async () => {
+  let requestedUrl = '';
+  const fetchImpl = (async (url: string | URL | Request) => {
+    requestedUrl = String(url);
+    return jsonResponse({ results: [] });
+  }) as unknown as typeof fetch;
+  const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
+
+  await adapter.search('назад в будущее 2', { mediaType: 'movie', language: 'ru', year: 1989 });
+  assert.ok(requestedUrl.includes('language=ru-RU'), 'household language must be forwarded as ru-RU');
+  assert.ok(requestedUrl.includes('primary_release_year=1989'), 'year must be forwarded for a movie search');
 });
 
 test('TmdbAdapter.getDetails normalizes genres, runtime, and US certification for a movie', async () => {
@@ -126,7 +160,7 @@ test('TmdbAdapter retries once on 429 then succeeds', async () => {
   }) as unknown as typeof fetch;
   const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
 
-  const results = await adapter.search('whatever');
+  const results = await adapter.search('whatever', { mediaType: 'movie' });
   assert.equal(calls, 2, 'must retry exactly once after a 429');
   assert.equal(results[0]!.title, 'OK');
 });

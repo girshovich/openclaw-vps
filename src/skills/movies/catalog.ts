@@ -3,9 +3,18 @@ import type { NewTitle, Title, MediaType, TitleSource } from './types.js';
 import type { NormalizedTitle, SourceAdapter } from './adapters/types.js';
 import type { TropeService } from './trope-service.js';
 
+export type ResolveStatus = 'confident' | 'ambiguous' | 'unresolved';
+
 export interface ResolveResult {
-  match: Title;
+  status: ResolveStatus;
+  match: Title | null;
   alternatives: Title[];
+}
+
+export interface ResolveOpts {
+  mediaType?: MediaType;
+  language?: string;
+  year?: number;
 }
 
 export interface CatalogAdapters {
@@ -18,8 +27,70 @@ export interface CatalogServiceOptions {
 }
 
 export interface CatalogService {
-  resolveTitle(query: string, opts?: { mediaType?: MediaType }): Promise<ResolveResult>;
+  resolveTitle(query: string, opts?: ResolveOpts): Promise<ResolveResult>;
   generate?(features: { dimension: string; value: string }[], opts: { mediaType?: MediaType; runtimeMaxMin?: number; limit?: number }): Promise<Title[]>;
+}
+
+// Compilation/clip/special decoys that should not win a "watched a film" intent.
+const NON_FILM_RE = /greatest moments|behind.the.scenes|special presentation|clip|compilation/i;
+
+function normalizeTitle(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+// Extract a plausible 4-digit release year from a free-text query. Ignores
+// future years (e.g. "Blade Runner 2049") which are part of a title, not a date.
+function extractYear(query: string): number | undefined {
+  const match = /\b(19|20)\d{2}\b/.exec(query);
+  if (!match) return undefined;
+  const year = Number(match[0]);
+  return year <= new Date().getFullYear() + 1 ? year : undefined;
+}
+
+function filterNonFilms(found: NormalizedTitle[], query: string): NormalizedTitle[] {
+  if (NON_FILM_RE.test(query)) return found; // user explicitly asked for clips/specials
+  const filtered = found.filter((c) => !NON_FILM_RE.test(c.title) && !(c.originalTitle && NON_FILM_RE.test(c.originalTitle)));
+  return filtered.length > 0 ? filtered : found; // never filter down to nothing
+}
+
+function exactMatch(c: NormalizedTitle, nq: string): boolean {
+  return normalizeTitle(c.title) === nq || (c.originalTitle !== undefined && normalizeTitle(c.originalTitle) === nq);
+}
+
+// Rank: exact title match first, then year match (when given), then popularity. Stable.
+function rankCandidates(found: NormalizedTitle[], query: string, year: number | undefined): NormalizedTitle[] {
+  const nq = normalizeTitle(query);
+  return found
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => {
+      const ea = exactMatch(a.c, nq) ? 1 : 0;
+      const eb = exactMatch(b.c, nq) ? 1 : 0;
+      if (ea !== eb) return eb - ea;
+      if (year !== undefined) {
+        const ya = a.c.year === year ? 1 : 0;
+        const yb = b.c.year === year ? 1 : 0;
+        if (ya !== yb) return yb - ya;
+      }
+      const pa = a.c.popularity ?? a.c.externalRating ?? 0;
+      const pb = b.c.popularity ?? b.c.externalRating ?? 0;
+      if (pa !== pb) return pb - pa;
+      return a.i - b.i;
+    })
+    .map((x) => x.c);
+}
+
+function classify(ranked: NormalizedTitle[], query: string, year: number | undefined): ResolveStatus {
+  if (ranked.length === 1) return 'confident';
+  const nq = normalizeTitle(query);
+  const exact = ranked.filter((c) => exactMatch(c, nq));
+  if (exact.length === 1) return 'confident';
+  if (year !== undefined && ranked.filter((c) => c.year === year).length === 1) return 'confident';
+  return 'ambiguous';
 }
 
 function toNewTitle(t: NormalizedTitle): NewTitle {
@@ -53,37 +124,56 @@ export function createCatalogService(
 
   return {
     async resolveTitle(query, resolveOpts) {
-      const cached = repo.searchCachedTitles(query);
-      if (cached.length > 0) {
-        return { match: cached[0]!, alternatives: cached.slice(1) };
+      const mediaType = resolveOpts?.mediaType;
+      const language = resolveOpts?.language;
+      const year = resolveOpts?.year ?? extractYear(query);
+
+      // Item 4: a bare query may reuse the loose title cache, but an explicit
+      // year/mediaType is a disambiguation/correction — go to the source so a
+      // stale cached match can't be served instead.
+      if (mediaType === undefined && year === undefined) {
+        const cached = repo.searchCachedTitles(query);
+        if (cached.length > 0) {
+          return { status: cached.length === 1 ? 'confident' : 'ambiguous', match: cached[0]!, alternatives: cached.slice(1) };
+        }
       }
 
-      const primary = resolveOpts?.mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
-      const fallback = resolveOpts?.mediaType === 'anime' ? null : adapters.jikan;
+      const primary = mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
+      const fallback = mediaType === 'anime' ? null : adapters.jikan;
 
-      let found = await primary.search(query, resolveOpts?.mediaType ? { mediaType: resolveOpts.mediaType } : undefined);
-
+      const searchOpts = {
+        ...(mediaType !== undefined && { mediaType }),
+        ...(language !== undefined && { language }),
+        ...(year !== undefined && { year }),
+      };
+      let found = await primary.search(query, Object.keys(searchOpts).length > 0 ? searchOpts : undefined);
       if (found.length === 0 && fallback) {
         found = await fallback.search(query);
       }
 
+      found = filterNonFilms(found, query);
       if (found.length === 0) {
-        const stub = repo.upsertTitle({
-          source: 'manual',
-          source_id: query.toLowerCase().trim().replace(/\s+/g, '-'),
-          title: query,
-          media_type: resolveOpts?.mediaType ?? 'movie',
-        });
-        return { match: stub, alternatives: [] };
+        // Item 1e: do not fabricate a junk stub-and-log; let the caller ask the user.
+        return { status: 'unresolved', match: null, alternatives: [] };
       }
 
-      const [top, ...rest] = found;
-      const detailAdapter = top!.source === 'jikan' ? adapters.jikan : adapters.tmdb;
-      const detailed = await detailAdapter.getDetails(top!.sourceId);
-      const match = repo.upsertTitle(toNewTitle(detailed));
-      maybeExtractTropes(match);
-      const alternatives = rest.map((r) => repo.upsertTitle(toNewTitle(r)));
-      return { match, alternatives };
+      const ranked = rankCandidates(found, query, year);
+      // Item 1d: enrich the top candidates so they carry year/poster/genres for the preview.
+      const topN = ranked.slice(0, 3);
+      const detailed = await Promise.all(
+        topN.map(async (c) => {
+          const adapter = c.source === 'jikan' ? adapters.jikan : adapters.tmdb;
+          try {
+            return await adapter.getDetails(c.sourceId);
+          } catch {
+            return c; // fall back to the search-normalized form
+          }
+        }),
+      );
+      const upserted = [...detailed, ...ranked.slice(3)].map((r) => repo.upsertTitle(toNewTitle(r)));
+      const [match, ...alternatives] = upserted;
+      maybeExtractTropes(match!);
+      return { status: classify(ranked, query, year), match: match!, alternatives };
     },
 
     async generate(features, genOpts) {

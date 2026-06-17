@@ -22,7 +22,7 @@ function mockCatalog(r: Repository): CatalogService {
   return {
     async resolveTitle(query): Promise<ResolveResult> {
       const cached = r.searchCachedTitles(query);
-      if (cached.length > 0) return { match: cached[0]!, alternatives: cached.slice(1) };
+      if (cached.length > 0) return { status: 'confident', match: cached[0]!, alternatives: cached.slice(1) };
       const match = r.upsertTitle({
         source: 'tmdb',
         source_id: `mock-${query.replace(/\s+/g, '-').toLowerCase()}`,
@@ -32,7 +32,7 @@ function mockCatalog(r: Repository): CatalogService {
         themes: ['theme:friendship'],
         tropes: ['trope:underdog_hero'],
       });
-      return { match, alternatives: [] };
+      return { status: 'confident', match, alternatives: [] };
     },
   };
 }
@@ -388,7 +388,7 @@ test('M3: add_feedback by title name finds the existing watch event without re-r
         media_type: 'movie',
         genres: ['genre:animation'],
       });
-      return { match, alternatives: [] };
+      return { status: 'confident', match, alternatives: [] };
     },
   };
   const fragSkill = createMoviesSkill({ db, catalogService: fragmentingCatalog, callLlm: defaultLlm });

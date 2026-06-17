@@ -2,7 +2,7 @@ import { WebSocketServer } from 'ws';
 import type { GatewayInboundMessage, GatewayOutboundMessage, ChannelType } from '../types.js';
 import { extractPhoto } from './photo-marker.js';
 import { enqueue } from './lane-queue.js';
-import { runTurn, BudgetExceededError } from '../runtime/index.js';
+import { runTurn, BudgetExceededError, maybeHalfBudgetNotice } from '../runtime/index.js';
 import { findOrCreateSession, createSession, getSessionHistory, updateSessionStatus, resetTaskRetries } from '../memory/sqlite.js';
 import { classifySession } from '../runtime/classifier.js';
 import { archiveSession } from '../runtime/archive.js';
@@ -55,6 +55,7 @@ export function startGateway(): WebSocketServer {
           channelId = msg.channelId;
           let sessionId: string;
           let responseText: string;
+          let budgetNotice: string | null = null;
 
           if (text.trim() === '/end') {
             sessionId = findOrCreateSession(channel, channelId);
@@ -70,6 +71,7 @@ export function startGateway(): WebSocketServer {
             resetTaskRetries(sessionId); // user replied → reset retry counters
             try {
               responseText = await enqueue(sessionId, () => runTurn(sessionId, text));
+              budgetNotice = maybeHalfBudgetNotice(sessionId);
             } catch (err) {
               if (err instanceof BudgetExceededError) {
                 responseText = `⚠️ ${err.message}`;
@@ -90,6 +92,11 @@ export function startGateway(): WebSocketServer {
             ...(photo !== undefined && { photo }),
           };
           ws.send(JSON.stringify(outbound));
+
+          if (budgetNotice) {
+            const notice: GatewayOutboundMessage = { type: 'response', channelId, text: budgetNotice };
+            ws.send(JSON.stringify(notice));
+          }
         } catch (err) {
           console.error('[gateway] error processing message:', err);
           if (channelId) {

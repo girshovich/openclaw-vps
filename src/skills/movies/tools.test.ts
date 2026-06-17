@@ -23,7 +23,7 @@ function mockCatalog(repo: Repository): CatalogService {
   return {
     async resolveTitle(query): Promise<ResolveResult> {
       const cached = repo.searchCachedTitles(query);
-      if (cached.length > 0) return { match: cached[0]!, alternatives: cached.slice(1) };
+      if (cached.length > 0) return { status: 'confident', match: cached[0]!, alternatives: cached.slice(1) };
       const match = repo.upsertTitle({
         source: 'tmdb',
         source_id: 'mock-1',
@@ -31,7 +31,7 @@ function mockCatalog(repo: Repository): CatalogService {
         media_type: 'movie',
         genres: ['genre:adventure'],
       });
-      return { match, alternatives: [] };
+      return { status: 'confident', match, alternatives: [] };
     },
   };
 }
@@ -152,7 +152,7 @@ test('manage_taste set_preferences calls ProfileService and returns profile_summ
   assert.ok(res.extracted.preferences.length > 0);
 });
 
-test('manage_taste set_preferences with loved_titles auto-logs them as watched+loved', async () => {
+test('manage_taste set_preferences with loved_titles returns a preview and writes nothing until confirmed', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
 
@@ -162,15 +162,15 @@ test('manage_taste set_preferences with loved_titles auto-logs them as watched+l
   const res = JSON.parse(await testSkill.executeTool(
     makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Kung Fu Panda', 'Coco'] }),
     ctx,
-  )) as { logged_as_watched: string[] };
+  )) as { confirm_required: boolean; preview: { confident: unknown[]; ambiguous: unknown[]; unresolved: string[] } };
 
-  assert.equal(res.logged_as_watched.length, 2);
-  assert.equal(repo.getWatchHistory(user.id).length, 2);
-  // learning applied loved feedback → at least one positive preference weight
-  assert.ok(repo.getPreferences(user.id).some((p) => p.weight > 0));
+  assert.equal(res.confirm_required, true);
+  assert.equal(res.preview.confident.length, 2);
+  // Item 2: the watched+loved writes are gated — nothing is committed yet.
+  assert.equal(repo.getWatchHistory(user.id).length, 0);
 });
 
-test('manage_taste set_preferences with loved_titles skips already-logged titles', async () => {
+test('manage_taste set_preferences flags already-watched titles in the preview', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
   const title = repo.upsertTitle({ source: 'tmdb', source_id: 'mock-kung-fu-panda', title: 'Kung Fu Panda', media_type: 'movie' });
@@ -179,25 +179,26 @@ test('manage_taste set_preferences with loved_titles skips already-logged titles
   const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
   const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
 
-  await testSkill.executeTool(
+  const res = JSON.parse(await testSkill.executeTool(
     makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Kung Fu Panda'] }),
     ctx,
-  );
+  )) as { preview: { confident: Array<{ already_watched: boolean }> } };
 
-  // Should still be only 1 watch event — no duplicate
+  assert.equal(res.preview.confident[0]!.already_watched, true, 'a title already in history must be flagged');
+  // Still no new write from a preview call.
   assert.equal(repo.getWatchHistory(user.id).length, 1);
 });
 
-test('M4: set_preferences reports loved_titles that fail to resolve in failed_titles', async () => {
+test('manage_taste set_preferences reports loved_titles that cannot be resolved as unresolved', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
 
-  // Catalog that resolves most titles but rejects one (simulating a source rate-limit / lookup failure)
+  // Catalog that resolves most titles but cannot resolve one (zero source results).
   const flakyCatalog: CatalogService = {
     async resolveTitle(query): Promise<ResolveResult> {
-      if (query === 'Unresolvable Title') throw new Error('source unavailable');
+      if (query === 'Unresolvable Title') return { status: 'unresolved', match: null, alternatives: [] };
       const match = repo.upsertTitle({ source: 'tmdb', source_id: `ok-${query}`, title: query, media_type: 'movie' });
-      return { match, alternatives: [] };
+      return { status: 'confident', match, alternatives: [] };
     },
   };
   const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
@@ -206,10 +207,44 @@ test('M4: set_preferences reports loved_titles that fail to resolve in failed_ti
   const res = JSON.parse(await testSkill.executeTool(
     makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Coco', 'Unresolvable Title'] }),
     ctx,
-  )) as { logged_as_watched: string[]; failed_titles?: string[] };
+  )) as { preview: { confident: Array<{ name: string }>; unresolved: string[] } };
 
-  assert.deepEqual(res.failed_titles, ['Unresolvable Title'], 'unresolved title must be reported, not silently dropped');
-  assert.deepEqual(res.logged_as_watched, ['Coco'], 'resolvable title must still be logged');
+  assert.deepEqual(res.preview.unresolved, ['Unresolvable Title'], 'unresolved title must be reported, not silently dropped');
+  assert.deepEqual(res.preview.confident.map((c) => c.name), ['Coco'], 'resolvable title must still appear in the preview');
+  // Item 1e: an unresolvable query creates no watch event or feedback.
+  assert.equal(repo.getWatchHistory(user.id).length, 0);
+});
+
+test('Item 3: set_preferences expands a numbered range into all installments in the preview', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+
+  const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
+  const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
+
+  const res = JSON.parse(await testSkill.executeTool(
+    makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves the saga', loved_titles: ['Star Wars 1-9'] }),
+    ctx,
+  )) as { preview: { confident: unknown[]; ambiguous: unknown[]; unresolved: string[] } };
+
+  const total = res.preview.confident.length + res.preview.ambiguous.length + res.preview.unresolved.length;
+  assert.equal(total, 9, '"Star Wars 1-9" must expand to 9 installments');
+});
+
+test('Item 5: undo_last in a new session reverts a watch from a previous session of the same household', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+
+  // Session A logs a watch.
+  const sessionA = createMoviesSkill({ db, catalogService: mockCatalog(repo) });
+  const logRes = JSON.parse(await sessionA.executeTool(makeCall('log_watch', { title_query: 'Coco', viewer_ids: [user.id] }), { sessionId: 'A', signal: undefined })) as { watch_event_id: string };
+  assert.equal((db.prepare(`SELECT COUNT(*) as c FROM watch_event WHERE id = ?`).get(logRes.watch_event_id) as { c: number }).c, 1);
+
+  // Session B is a fresh skill instance over the same household DB — undo must still reach the prior action.
+  const sessionB = createMoviesSkill({ db, catalogService: mockCatalog(repo) });
+  const undoRes = JSON.parse(await sessionB.executeTool(makeCall('undo_last', {}), { sessionId: 'B', signal: undefined })) as { reverted_action: string };
+  assert.ok(undoRes.reverted_action.includes(logRes.watch_event_id));
+  assert.equal((db.prepare(`SELECT COUNT(*) as c FROM watch_event WHERE id = ?`).get(logRes.watch_event_id) as { c: number }).c, 0);
 });
 
 test('manage_taste suppress adds a suppression entry', async () => {

@@ -15,6 +15,7 @@ export interface NormalizedTitle {
   synopsis?: string;
   posterUrl?: string;
   externalRating?: number;
+  popularity?: number;
   genres: string[];
   themes: string[];
 }
@@ -26,9 +27,15 @@ export interface DiscoverOpts {
   limit?: number;
 }
 
+export interface SearchOpts {
+  mediaType?: MediaType;
+  language?: string;
+  year?: number;
+}
+
 export interface SourceAdapter {
   readonly source: 'tmdb' | 'jikan';
-  search(query: string, opts?: { mediaType?: MediaType }): Promise<NormalizedTitle[]>;
+  search(query: string, opts?: SearchOpts): Promise<NormalizedTitle[]>;
   getDetails(sourceId: string): Promise<NormalizedTitle>;
   discover?(opts: DiscoverOpts): Promise<NormalizedTitle[]>;
 }

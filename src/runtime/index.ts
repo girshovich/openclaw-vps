@@ -1,6 +1,6 @@
 import { chat, DEFAULT_MODEL, estimateCost } from '../llm/index.js';
 import type { LLMMessage, ToolCall } from '../llm/index.js';
-import { appendMessage, getSessionHistory, createSession, addSessionCost, getSessionCost } from '../memory/sqlite.js';
+import { appendMessage, getSessionHistory, createSession, addSessionCost, getSessionCost, getSessionCostWarned, markSessionCostWarned } from '../memory/sqlite.js';
 import type { DbMessage } from '../memory/sqlite.js';
 
 // ── Skill registration ────────────────────────────────────────────────────────
@@ -13,7 +13,7 @@ try {
 
 // ── Budget limits ─────────────────────────────────────────────────────────────
 
-const SESSION_COST_LIMIT_USD = parseFloat(process.env['SESSION_COST_LIMIT_USD'] ?? '2.00');
+export const SESSION_COST_LIMIT_USD = parseFloat(process.env['SESSION_COST_LIMIT_USD'] ?? '4.00');
 const SUBAGENT_COST_LIMIT_USD = parseFloat(process.env['SUBAGENT_COST_LIMIT_USD'] ?? '1.00');
 
 export class BudgetExceededError extends Error {
@@ -24,6 +24,20 @@ export class BudgetExceededError extends Error {
     );
     this.name = 'BudgetExceededError';
   }
+}
+
+// Returns a one-time notice the first time a session passes half its budget,
+// else null. Threshold is derived from the live limit, so changing the limit
+// automatically moves the warning point.
+export function maybeHalfBudgetNotice(sessionId: string): string | null {
+  const spent = getSessionCost(sessionId);
+  if (spent < SESSION_COST_LIMIT_USD / 2) return null;
+  if (getSessionCostWarned(sessionId)) return null;
+  markSessionCostWarned(sessionId);
+  return (
+    `ℹ️ Used $${spent.toFixed(2)} of your $${SESSION_COST_LIMIT_USD.toFixed(2)} session limit (over half). ` +
+    `You can keep going; at the limit you'll need /new to continue.`
+  );
 }
 import { compactIfNeeded } from './compaction.js';
 import { getToolDefinitions, executeTool } from './tools.js';
