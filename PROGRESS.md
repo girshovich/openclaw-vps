@@ -6,8 +6,8 @@
 - Plan (how): `implement-skills-movie.md`
 
 ## Current state
-- **Active phase:** Phase 9 (deferred)
-- **Last commit:** `8d812e8` — Phase 8: 13 flow tests + skill README
+- **Active phase:** Complete
+- **Last commit:** `bccf657` — Phase 9: gateway protocol extension + Telegram buttons + photos
 - **Notes / blockers:** _(none)_
 
 ## Phases
@@ -21,7 +21,7 @@
 - [x] **Phase 6** — Tools layer (~8 tools) + register skill with activator
 - [x] **Phase 7** — Presentation (text-only renderers + NL rating parse)
 - [x] **Phase 8** — End-to-end: 13 flows + acceptance criteria + README
-- [ ] **Phase 9** — (deferred) Buttons & posters: gateway protocol extension
+- [x] **Phase 9** — (deferred) Buttons & posters: gateway protocol extension
 
 ## Log
 _(append one line per completed phase: date · phase · commit hash · one-line outcome)_
@@ -31,6 +31,7 @@ _(append one line per completed phase: date · phase · commit hash · one-line 
 - 2026-06-16 · Phase 2 · `e5e4e11` · Added `src/skills/movies/adapters/{types,age-rating,tmdb,jikan}.ts` (`SourceAdapter`/`NormalizedTitle` boundary types, TMDB adapter w/ movie→tv 404 fallback for series + US certification normalization, Jikan adapter w/ genre/theme split by canonical prefix), `src/skills/movies/catalog.ts` (`CatalogService.resolveTitle`: cache-first via `searchCachedTitles`, else adapter search→getDetails→upsert, ambiguous results returned as alternatives), plus `Repository.resolveTaxonomy` (needed by adapters to map source genre/tag terms to canonical ids) and `TMDB_API_KEY` in `.env.example`. 12 new passing `node:test` cases (fixture-mocked `fetch`, no new deps) covering normalization, the movie/tv fallback, missing-API-key error, cache-first dedup, and anime routing.
 - 2026-06-16 · Phase 3 · `4dd323d` · Added `src/skills/movies/trope-service.ts`: `TropeService.extract(title, reviewSnippets?)` prompts the LLM (default `simpleChat`+`CLASSIFY_MODEL`, injectable `callLlm` for tests) for a JSON list of `{phrase, confidence}`, resolves each via `Repository.resolveTrope` first, and only creates a new `trope_dictionary` entry (via slugified canonical id) when unmapped AND high-confidence — low-confidence unmapped phrases are dropped, never persisted raw (spec §6.6). Added `Repository.setTropes` (persists mapped ids + stamps `tropes_extracted_at`). 5 new passing `node:test` cases incl. known-phrase resolution, new high-confidence dictionary entry creation, low-confidence drop (with proof no non-`trope:`-prefixed string is ever stored), and graceful empty-result handling on invalid LLM JSON.
 - 2026-06-17 · Phase 6 · `4596392` · Added `src/skills/movies/index.ts`: 8 tools (recommend/log_watch/add_feedback/manage_viewers/manage_taste/show/setup/undo_last) behind a `Skill` object; tool schemas follow spec §5 with LLM-accuracy-optimized descriptions; `executeTool` dispatcher wires each tool to Phase 2-5 services with exactOptionalPropertyTypes-safe conditional spreads; `undo_last` pops `action_log` and deletes the underlying entity; `registerMoviesSkill()` builds real TMDB/Jikan adapters and registers with the Phase 0.5 registry; `src/runtime/index.ts` now calls `registerMoviesSkill()` on startup behind a try-catch (gracefully skipped when TMDB_API_KEY absent). Extended `Repository` with `deleteWatchEvent`/`deleteFeedback`; `RecommendOptions` with ephemeral `runtimeMaxMin`. 18 new tests (81 total): all 8 tools return documented shapes, undo_last reverts watch events, activator correctly scopes movies tools into movie sessions and excludes them from non-movie sessions.
+- 2026-06-17 · Phase 9 · `bccf657` · Extended GatewayOutboundMessage with photo/replyMarkup; gateway strips [PHOTO:url] markers; Telegram connector auto-attaches 👍/😐/👎/✋/➕ button rows to recommendation responses and routes callback_query → NL text → agent; movies/buttons.ts for button building and callback codec; movies recommend tool now includes poster_url. 23 new tests, 140 total.
 - 2026-06-17 · Phase 8 · `8d812e8` · Added flows.test.ts (13 scripted multi-step flows covering all spec §4/§11 acceptance criteria) and README.md (API keys, setup, trope dictionary, adapter guide). 13 new tests, 117 total.
 - 2026-06-17 · Phase 7 · `cd817b6` · Added presenter.ts (5 spec §7 text renderers), nl-parser.ts (regex NL rating/favorite/tag parsing), extended systemPromptFragment with card format + interaction guide. 23 new tests, 104 total.
 - 2026-06-17 · Phase 5 · `037de1c` · Added `src/skills/movies/recommendation-service.ts`: `RecommendationService.recommend(viewerIds, opts?)` pulls candidates from the cached title store (§6.1; adapters have no bulk-discover endpoint, cache accumulates via log_watch flows), applies §6.2 hard filters (youngest-viewer age ceiling, max_runtime/exclude_trope/theme/trigger constraints, trope/genre/theme/title suppressions, exclude_seen union across all viewers, recent dismissals), scores by §6.3 (Σ effectiveWeight×multiplier: tropes:3 > themes:2 > genres:1.5 > source_type:1, + external_rating bonus), merges joint profile via `Math.min` across all viewer weights (intersection of positives / union of negatives per spec §6.3), normalizes scores to 0-100, logs every shown candidate to `recommendation_log`, returns top N with `match_reasons`. Added `Repository.listTitles`, `getWatchedTitleIds`, `getRecentlyDismissedTitleIds`. 14 new tests (63 total) covering all filter types, ranking, joint-watch ceiling, match_reasons, and logging.
