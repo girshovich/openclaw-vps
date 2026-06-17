@@ -389,7 +389,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           `Return ONLY valid JSON: {"members": [{"name": string, "birth_date": string|null, "age": number|null, "self": boolean}]}\n` +
           `"birth_date": ISO date YYYY-MM-DD if any date of birth is given (convert from any format, e.g. 01.01.1986 → 1986-01-01), otherwise null.\n` +
           `"age": current age as integer only when no birth date is available, otherwise null.\n` +
-          `"self": true if this is the speaker (e.g. "я"). Output ONLY the JSON object.`,
+          `"self": true if this member is clearly the speaker (first-person markers like "я", "мне", "меня", "I", "me"). If no member can be identified as the speaker, set "self": false for all. Output ONLY the JSON object.`,
         );
         let members: Array<{ name: string; birth_date: string | null; age: number | null; self: boolean }> = [];
         try {
@@ -401,6 +401,8 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         const language = (inp['language'] as string | undefined) ?? 'ru';
         const recommendForAdult = (inp['recommend_for_adult'] as boolean | undefined) ?? false;
 
+        const noSelfDetected = members.length > 0 && !members.some((m) => m.self);
+
         const household = repo.createHousehold({ timezone, language });
         const created_users = members.map((m) =>
           repo.createUser({
@@ -411,7 +413,9 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           }),
         );
         repo.setOnboarded();
-        return JSON.stringify({ household, created_users });
+        const result: Record<string, unknown> = { household, created_users };
+        if (noSelfDetected) result['warning'] = 'Could not identify which member is the primary user. All members are included in recommendations. Use manage_viewers to set include_in_recommendations=false for any adult who should be excluded.';
+        return JSON.stringify(result);
       }
 
       // ── undo_last ────────────────────────────────────────────────────────────
@@ -456,8 +460,14 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
       'If no viewers are configured (manage_viewers action=list returns empty), ask for household members names and ages first, then call setup. Do not recommend before setup is complete.',
       '',
       '== Logging watched / liked titles ==',
-      'When the user says they liked, watched, or have seen specific titles — call log_watch + add_feedback(rating=loved) for each one directly. Do NOT use set_preferences for this.',
-      'Use set_preferences(loved_titles=[...]) only when the user is describing general taste and naming titles as examples of what they like; loved_titles will be auto-logged as watched+loved by the tool.',
+      'When the user names specific titles they liked or watched — ALWAYS extract those titles into the loved_titles array. NEVER bury title names inside free_text — they will not be recorded as watch history.',
+      'Split mixed messages: titles → loved_titles, qualitative statements and constraints → free_text.',
+      'Example: "сыну нравятся Звёздные Войны, One Piece, боится страшного"',
+      '→ set_preferences(user_id=..., loved_titles=["Звёздные Войны", "One Piece"], free_text="боится страшного")',
+      'NOT: set_preferences(user_id=..., free_text="сыну нравятся Звёздные Войны, One Piece, боится страшного")',
+      '',
+      'Use set_preferences when the user is describing general taste (with or without named titles as examples).',
+      'Use log_watch + add_feedback(rating=loved) when recording a specific watch event (user says they just watched something, or gives an explicit rating).',
       'For franchises or numbered series ("episodes 1–9", "all parts", "seasons 1–3") — emit one log_watch call per installment in a single response. They execute in parallel so latency is the same as one call.',
       '',
       '== Recommendation card format ==',

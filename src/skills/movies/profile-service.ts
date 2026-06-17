@@ -40,7 +40,7 @@ Extract taste preferences and hard constraints implied by this. Respond with ONL
 { "preferences": [{ "dimension": "genre"|"theme"|"trope"|"tone"|"pace"|"runtime"|"source_type", "value": string, "weight": number }],
   "constraints": [{ "type": "trigger"|"max_runtime"|"min_age_rating"|"max_age_rating"|"no_subtitles"|"exclude_source"|"exclude_trope"|"exclude_theme", "value": string }] }
 Preference "value" MUST start with the dimension name and a colon: dimension "genre" → "genre:adventure" (never just "adventure"); dimension "trope" → "trope:underdog_hero"; dimension "theme" → "theme:friendship".
-Constraint "value": "trigger:parent_separation", "max_runtime:90", etc.
+Constraint "value" examples by type: "trigger:parent_separation", "max_runtime:90", "min_age_rating:PG", "max_age_rating:PG-13", "exclude_theme:theme:horror", "exclude_trope:trope:jump_scare", "exclude_source:source_type:anime". For exclude_* types the value MUST include the dimension prefix (theme:, trope:, source_type:).
 "weight" is a float from -1.0 to 1.0 (positive = likes, negative = dislikes/avoid). Output nothing but the JSON object.`;
 }
 
