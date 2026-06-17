@@ -12,24 +12,12 @@ import { createLearningService } from './learning-service.js';
 import { createRecommendationService } from './recommendation-service.js';
 import { createTmdbAdapter } from './adapters/tmdb.js';
 import { createJikanAdapter } from './adapters/jikan.js';
-import type { User } from './types.js';
+import { createTropeService } from './trope-service.js';
+import { computeCurrentAge } from './age.js';
+import type { User, Preference, RecommendationOutcome } from './types.js';
 
-// Spec §3.2: prefer birth_date; fall back to age_static + approximate aging from age_recorded_at
-function computeCurrentAge(user: User): number | null {
-  if (user.birth_date) {
-    const birth = new Date(user.birth_date);
-    const now = new Date();
-    let age = now.getFullYear() - birth.getFullYear();
-    const m = now.getMonth() - birth.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age--;
-    return age;
-  }
-  if (user.age_static !== null) {
-    if (!user.age_recorded_at) return user.age_static;
-    return user.age_static + (new Date().getFullYear() - new Date(user.age_recorded_at).getFullYear());
-  }
-  return null;
-}
+const TODAY = (): string => new Date().toISOString().slice(0, 10);
+const DISMISSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const MOVIES_TOOLS: ToolDefinition[] = [
   {
@@ -163,7 +151,7 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
   const repo = createRepository(db);
   const profileService = createProfileService(repo, { callLlm });
   const learningService = createLearningService(repo);
-  const recommendationService = createRecommendationService(repo);
+  const recommendationService = createRecommendationService(repo, catalogService);
 
   async function executeTool(call: ToolCall, _ctx: SkillToolContext): Promise<string> {
     const inp = call.input;
@@ -214,6 +202,14 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         });
         repo.pushAction({ action_type: 'watch_logged', entity_ref: `watch_event:${event.id}`, previous_state: null });
 
+        // M2: mark any open rec logs for this title as picked
+        const sinceMs = Date.now() - DISMISSED_WINDOW_MS;
+        for (const viewer of viewers) {
+          for (const log of repo.findRecentRecLogs(viewer.id, match.id, sinceMs)) {
+            repo.setRecOutcome(log.id, 'picked');
+          }
+        }
+
         const result: Record<string, unknown> = { watch_event_id: event.id, resolved_title: match.title };
         if (alternatives.length > 0) result['ambiguous_matches'] = alternatives.map((t) => t.title);
         return JSON.stringify(result);
@@ -225,30 +221,58 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         const viewerId = inp['viewer_id'] as string;
         const rating = inp['rating'] as 'loved' | 'ok' | 'disliked';
 
-        // Detect UUID (watch_event_id) vs title name
         let watchEventId: string;
+        let titleId: string | null = null;
+
         if (/^[\da-f]{8}(-[\da-f]{4}){3}-[\da-f]{12}$/i.test(titleQuery)) {
           watchEventId = titleQuery;
+          titleId = repo.getWatchEventTitleId(watchEventId);
         } else {
-          const { match } = await catalogService.resolveTitle(titleQuery);
+          // M3: try history match first to avoid catalog re-resolution for stub titles
           const history = repo.getWatchHistory(viewerId);
-          const entry = [...history].reverse().find((e) => e.title_id === match.id);
-          if (!entry) return JSON.stringify({ error: 'No watch event found for this title and viewer.' });
-          watchEventId = entry.watch_event_id;
+          const histMatch = history.find((e) => e.title.toLowerCase().includes(titleQuery.toLowerCase()));
+          if (histMatch) {
+            watchEventId = histMatch.watch_event_id;
+            titleId = histMatch.title_id;
+          } else {
+            const { match } = await catalogService.resolveTitle(titleQuery);
+            titleId = match.id;
+            const entry = [...history].reverse().find((e) => e.title_id === match.id);
+            if (!entry) return JSON.stringify({ error: 'No watch event found for this title and viewer.' });
+            watchEventId = entry.watch_event_id;
+          }
         }
 
         const fbTags = inp['tags'] as string[] | undefined;
         const fbReview = inp['review_text'] as string | undefined;
+        const abandoned = (inp['abandoned'] as boolean | undefined) ? 1 : 0;
+
+        // H4: snapshot prefs before applying feedback so undo can restore them
+        const prefsSnapshot: Preference[] = repo.getPreferences(viewerId);
+
         const feedback = repo.addFeedback({
           watch_event_id: watchEventId,
           user_id: viewerId,
           rating,
-          abandoned: (inp['abandoned'] as boolean | undefined) ? 1 : 0,
+          abandoned,
           ...(fbTags !== undefined && { tags: fbTags }),
           ...(fbReview !== undefined && { review_text: fbReview }),
         });
         learningService.applyFeedback(feedback.id);
-        repo.pushAction({ action_type: 'feedback_added', entity_ref: `feedback:${feedback.id}`, previous_state: null });
+        repo.pushAction({
+          action_type: 'feedback_added',
+          entity_ref: `feedback:${feedback.id}`,
+          previous_state: { userId: viewerId, prefsSnapshot },
+        });
+
+        // M2: mark rec outcome based on rating
+        if (titleId) {
+          const sinceMs = Date.now() - DISMISSED_WINDOW_MS;
+          const outcome: RecommendationOutcome = (rating === 'disliked' || abandoned === 1) ? 'dismissed' : 'picked';
+          for (const log of repo.findRecentRecLogs(viewerId, titleId, sinceMs)) {
+            repo.setRecOutcome(log.id, outcome);
+          }
+        }
 
         return JSON.stringify({ feedback_id: feedback.id, profile_updated: true });
       }
@@ -269,7 +293,8 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
             household_id: household.id,
             name: inp['name'] as string,
             ...(birthDate !== undefined && { birth_date: birthDate }),
-            ...(age !== undefined && { age_static: age }),
+            // H7: persist age_recorded_at so aging works correctly
+            ...(age !== undefined && { age_static: age, age_recorded_at: TODAY() }),
             ...(includeRec !== undefined && { include_in_recommendations: includeRec ? 1 : 0 }),
           });
           repo.pushAction({ action_type: 'user_added', entity_ref: `user:${user.id}`, previous_state: null });
@@ -283,7 +308,8 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           const user = repo.updateUser(userId, {
             ...(inp['name'] !== undefined && { name: inp['name'] as string }),
             ...(birthDate !== undefined && { birth_date: birthDate }),
-            ...(age !== undefined && { age_static: age }),
+            // H7: persist age_recorded_at so aging works correctly
+            ...(age !== undefined && { age_static: age, age_recorded_at: TODAY() }),
             ...(includeRec !== undefined && { include_in_recommendations: includeRec ? 1 : 0 }),
           });
           return JSON.stringify({ user });
@@ -308,34 +334,44 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           if (!freeText) return JSON.stringify({ error: 'free_text is required for set_preferences.' });
           const lovedTitleNames = inp['loved_titles'] as string[] | undefined;
 
-          // Auto-log each loved title as watched + loved so history is populated immediately.
           const loggedTitles: string[] = [];
+          const failedTitles: string[] = [];
+
           if (lovedTitleNames && lovedTitleNames.length > 0) {
             const user = repo.listUsers().find((u) => u.id === userId);
             if (user) {
               const seenIds = new Set(repo.getWatchHistory(userId).map((e) => e.title_id));
-              await Promise.allSettled(
+              // M4: removed inner try/catch so Promise.allSettled captures failures
+              const settleResults = await Promise.allSettled(
                 lovedTitleNames.map(async (name) => {
-                  try {
-                    const { match } = await catalogService.resolveTitle(name);
-                    if (seenIds.has(match.id)) return;
-                    const event = repo.createWatchEvent({
-                      title_id: match.id,
-                      viewers: [{ user_id: userId, age_at_watch: computeCurrentAge(user) ?? 0 }],
-                    });
-                    const feedback = repo.addFeedback({ watch_event_id: event.id, user_id: userId, rating: 'loved', abandoned: 0 });
-                    learningService.applyFeedback(feedback.id);
-                    repo.pushAction({ action_type: 'feedback_added', entity_ref: `feedback:${feedback.id}`, previous_state: null });
-                    loggedTitles.push(match.title);
-                  } catch { /* unresolvable title — skipped */ }
+                  const { match } = await catalogService.resolveTitle(name);
+                  if (seenIds.has(match.id)) return;
+                  const event = repo.createWatchEvent({
+                    title_id: match.id,
+                    viewers: [{ user_id: userId, age_at_watch: computeCurrentAge(user) ?? 0 }],
+                  });
+                  // H4: snapshot prefs before applying
+                  const prefsSnapshot: Preference[] = repo.getPreferences(userId);
+                  const feedback = repo.addFeedback({ watch_event_id: event.id, user_id: userId, rating: 'loved', abandoned: 0 });
+                  learningService.applyFeedback(feedback.id);
+                  // H4: push both actions so each can be individually undone
+                  repo.pushAction({ action_type: 'watch_logged', entity_ref: `watch_event:${event.id}`, previous_state: null });
+                  repo.pushAction({ action_type: 'feedback_added', entity_ref: `feedback:${feedback.id}`, previous_state: { userId, prefsSnapshot } });
+                  loggedTitles.push(match.title);
                 }),
               );
+              // M4: report which titles couldn't be resolved
+              settleResults.forEach((r, i) => {
+                if (r.status === 'rejected') failedTitles.push(lovedTitleNames[i]!);
+              });
             }
           }
 
           const extracted = await profileService.setPreferences(userId, freeText, lovedTitleNames);
           const summary = profileService.summary(userId);
-          return JSON.stringify({ profile_summary: summary, extracted, logged_as_watched: loggedTitles });
+          const result: Record<string, unknown> = { profile_summary: summary, extracted, logged_as_watched: loggedTitles };
+          if (failedTitles.length > 0) result['failed_titles'] = failedTitles;
+          return JSON.stringify(result);
         }
         if (action === 'add_to_watchlist') {
           const titleQuery = inp['title_query'] as string;
@@ -346,6 +382,11 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
             status: (inp['status'] as 'wishlist' | 'favorite') ?? 'wishlist',
             added_from: (inp['added_from'] as 'recommendation' | 'manual') ?? 'manual',
           });
+          // M2: mark open rec logs as picked
+          const sinceMs = Date.now() - DISMISSED_WINDOW_MS;
+          for (const log of repo.findRecentRecLogs(userId, match.id, sinceMs)) {
+            repo.setRecOutcome(log.id, 'picked');
+          }
           const result: Record<string, unknown> = { watchlist_id: entry.id, resolved_title: match.title };
           if (alternatives.length > 0) result['ambiguous_matches'] = alternatives.map((t) => t.title);
           return JSON.stringify(result);
@@ -397,6 +438,11 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           if (match) members = (JSON.parse(match[0]) as { members: typeof members }).members ?? [];
         } catch { /* fall through with empty list */ }
 
+        // Low: don't call setOnboarded on empty parse — let the user retry
+        if (members.length === 0) {
+          return JSON.stringify({ error: 'Could not parse household members. Please retry with names and ages, e.g. "My name is Mikhail, 38; my son Timur is 6."' });
+        }
+
         const timezone = (inp['timezone'] as string | undefined) ?? 'UTC';
         const language = (inp['language'] as string | undefined) ?? 'ru';
         const recommendForAdult = (inp['recommend_for_adult'] as boolean | undefined) ?? false;
@@ -408,7 +454,12 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
           repo.createUser({
             household_id: household.id,
             name: m.name,
-            ...(m.birth_date ? { birth_date: m.birth_date } : m.age !== null ? { age_static: m.age } : {}),
+            // H7: persist age_recorded_at alongside age_static so aging works
+            ...(m.birth_date
+              ? { birth_date: m.birth_date }
+              : m.age !== null
+                ? { age_static: m.age, age_recorded_at: TODAY() }
+                : {}),
             include_in_recommendations: m.self ? (recommendForAdult ? 1 : 0) : 1,
           }),
         );
@@ -423,13 +474,24 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         const action = repo.popLastAction();
         if (!action) return JSON.stringify({ reverted_action: 'nothing to undo' });
 
-        const [, entityId] = action.entity_ref.split(':') as [string, string];
+        const colonIdx = action.entity_ref.indexOf(':');
+        const entityId = action.entity_ref.slice(colonIdx + 1);
+
         if (action.action_type === 'watch_logged') {
           repo.deleteWatchEvent(entityId);
         } else if (action.action_type === 'feedback_added') {
           repo.deleteFeedback(entityId);
+          // H4: restore preference weights from snapshot
+          const state = action.previous_state as { userId: string; prefsSnapshot: Preference[] } | null;
+          if (state?.prefsSnapshot) {
+            repo.restorePreferences(state.userId, state.prefsSnapshot);
+          }
         } else if (action.action_type === 'user_added') {
           repo.removeUser(entityId);
+        } else if (action.action_type === 'user_removed') {
+          // H4: recreate the user from the snapshot
+          const user = action.previous_state as User | null;
+          if (user) repo.restoreUser(user);
         }
         return JSON.stringify({ reverted_action: action.entity_ref });
       }
@@ -444,11 +506,11 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
     description:
       'Подбор фильмов и аниме для семьи, запись просмотров, оценки и ревью, избранное и вишлист, профили вкуса детей с учётом возраста. Всё про "что посмотреть", "смотрели", "понравилось/не зашло", "добавь в избранное", "чем занять ребёнка".',
     examples: [
+      // M1: removed 'смотр' fragment — caused false activations on unrelated words
       'что посмотреть',
       'фильм',
       'аниме',
       'кино',
-      'смотр',
       'избран',
       'movie',
       'anime',
@@ -469,6 +531,9 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
       'Use set_preferences when the user is describing general taste (with or without named titles as examples).',
       'Use log_watch + add_feedback(rating=loved) when recording a specific watch event (user says they just watched something, or gives an explicit rating).',
       'For franchises or numbered series ("episodes 1–9", "all parts", "seasons 1–3") — emit one log_watch call per installment in a single response. They execute in parallel so latency is the same as one call.',
+      '',
+      '== Age-appropriateness ==',
+      'Lean toward titles that fit the youngest viewer — each candidate includes age_rating, and you can also judge from the title, synopsis, and tropes. This is a soft preference: order and frame accordingly, but never hard-drop or hide a title solely because of its rating. If you surface something more grown-up, just flag it (e.g. "чуть взрослее").',
       '',
       '== Recommendation card format ==',
       '🎬 1. Title (year) · age rating · XX min · ⭐N.N · SOURCE',
@@ -501,6 +566,9 @@ export function registerMoviesSkill(): void {
   const jikanAdapter = createJikanAdapter({
     resolveGenre: (term) => repo.resolveTaxonomy('jikan', term),
   });
-  const catalogService = createCatalogService(repo, { tmdb: tmdbAdapter, jikan: jikanAdapter });
+  // C3: wire trope extraction into catalog
+  const tropeService = createTropeService(repo);
+  // C1 + C3: catalog now supports generate (discovery) and trope extraction
+  const catalogService = createCatalogService(repo, { tmdb: tmdbAdapter, jikan: jikanAdapter }, { tropeService });
   registerSkill(createMoviesSkill({ db, catalogService }));
 }

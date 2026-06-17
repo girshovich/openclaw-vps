@@ -96,6 +96,41 @@ test('TmdbAdapter.getDetails falls back to /tv when /movie 404s, normalizing ser
   assert.equal(calls, 2);
 });
 
+test('TmdbAdapter.discover sends with_genres (canonical→id) and runtime ceiling, normalizing results', async () => {
+  let requestedUrl = '';
+  const fetchImpl = (async (url: string | URL | Request) => {
+    requestedUrl = String(url);
+    return jsonResponse({
+      results: [
+        { id: 603, title: 'The Matrix', release_date: '1999-03-30', vote_average: 8.2, poster_path: '/p.jpg' },
+      ],
+    });
+  }) as unknown as typeof fetch;
+  const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
+
+  const results = await adapter.discover!({ genres: ['Action'], runtimeMaxMin: 90, limit: 5 });
+  assert.ok(requestedUrl.includes('/discover/movie'));
+  assert.ok(requestedUrl.includes('with_genres=28'), 'Action must map to TMDB id 28');
+  assert.ok(requestedUrl.includes('with_runtime.lte=90'), 'runtime ceiling must be sent');
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.sourceId, '603');
+  assert.equal(results[0]!.title, 'The Matrix');
+});
+
+test('TmdbAdapter retries once on 429 then succeeds', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    if (calls === 1) return jsonResponse({}, 429);
+    return jsonResponse({ results: [{ id: 1, title: 'OK', release_date: '2020-01-01' }] });
+  }) as unknown as typeof fetch;
+  const adapter = createTmdbAdapter({ apiKey: 'test-key', resolveGenre: () => null, fetchImpl });
+
+  const results = await adapter.search('whatever');
+  assert.equal(calls, 2, 'must retry exactly once after a 429');
+  assert.equal(results[0]!.title, 'OK');
+});
+
 test('TmdbAdapter throws a clear setup error when no API key is available', async () => {
   const original = process.env['TMDB_API_KEY'];
   delete process.env['TMDB_API_KEY'];

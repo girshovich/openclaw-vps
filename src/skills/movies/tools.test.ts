@@ -188,6 +188,30 @@ test('manage_taste set_preferences with loved_titles skips already-logged titles
   assert.equal(repo.getWatchHistory(user.id).length, 1);
 });
 
+test('M4: set_preferences reports loved_titles that fail to resolve in failed_titles', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+
+  // Catalog that resolves most titles but rejects one (simulating a source rate-limit / lookup failure)
+  const flakyCatalog: CatalogService = {
+    async resolveTitle(query): Promise<ResolveResult> {
+      if (query === 'Unresolvable Title') throw new Error('source unavailable');
+      const match = repo.upsertTitle({ source: 'tmdb', source_id: `ok-${query}`, title: query, media_type: 'movie' });
+      return { match, alternatives: [] };
+    },
+  };
+  const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
+  const testSkill = createMoviesSkill({ db, catalogService: flakyCatalog, callLlm: mockLlm });
+
+  const res = JSON.parse(await testSkill.executeTool(
+    makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Coco', 'Unresolvable Title'] }),
+    ctx,
+  )) as { logged_as_watched: string[]; failed_titles?: string[] };
+
+  assert.deepEqual(res.failed_titles, ['Unresolvable Title'], 'unresolved title must be reported, not silently dropped');
+  assert.deepEqual(res.logged_as_watched, ['Coco'], 'resolvable title must still be logged');
+});
+
 test('manage_taste suppress adds a suppression entry', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });

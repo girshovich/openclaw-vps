@@ -82,6 +82,13 @@ export interface Repository {
   addTrope(entry: NewTropeDictionaryEntry): string;
 
   resolveTaxonomy(source: TitleSource, term: string): string | null;
+  reverseTaxonomy(source: TitleSource, canonical: string): string[];
+
+  restorePreferences(userId: string, snapshot: Preference[]): void;
+  restoreUser(user: User): void;
+
+  findRecentRecLogs(userId: string, titleId: string, sinceMs: number): RecommendationLogEntry[];
+  getWatchEventTitleId(watchEventId: string): string | null;
 }
 
 function toJson(arr: string[] | undefined): string {
@@ -488,6 +495,57 @@ export function createRepository(db: RecommenderDb): Repository {
         .prepare(`SELECT canonical_value FROM taxonomy_map WHERE source = ? AND source_term = ?`)
         .get(source, term) as { canonical_value: string } | undefined;
       return row?.canonical_value ?? null;
+    },
+
+    reverseTaxonomy(source: TitleSource, canonical: string): string[] {
+      const rows = db
+        .prepare(`SELECT source_term FROM taxonomy_map WHERE source = ? AND canonical_value = ?`)
+        .all(source, canonical) as Array<{ source_term: string }>;
+      return rows.map((r) => r.source_term);
+    },
+
+    restorePreferences(userId: string, snapshot: Preference[]): void {
+      const snapshotKeys = new Set(snapshot.map((p) => `${p.dimension}:${p.value}`));
+      const current = db.prepare(`SELECT * FROM user_preference WHERE user_id = ?`).all(userId) as Preference[];
+      for (const p of current) {
+        if (!snapshotKeys.has(`${p.dimension}:${p.value}`)) {
+          db.prepare(`DELETE FROM user_preference WHERE user_id = ? AND dimension = ? AND value = ?`)
+            .run(userId, p.dimension, p.value);
+        }
+      }
+      for (const p of snapshot) {
+        db.prepare(`
+          INSERT INTO user_preference (id, user_id, dimension, value, weight, origin, updated_at, age_at_signal)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(user_id, dimension, value)
+          DO UPDATE SET weight = excluded.weight, origin = excluded.origin, updated_at = excluded.updated_at,
+                        age_at_signal = excluded.age_at_signal
+        `).run(randomUUID(), p.user_id, p.dimension, p.value, p.weight, p.origin, p.updated_at, p.age_at_signal ?? null);
+      }
+    },
+
+    restoreUser(user: User): void {
+      db.prepare(`
+        INSERT OR IGNORE INTO user
+          (id, household_id, name, birth_date, age_static, age_recorded_at, include_in_recommendations, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(user.id, user.household_id, user.name, user.birth_date, user.age_static, user.age_recorded_at, user.include_in_recommendations, user.created_at);
+    },
+
+    findRecentRecLogs(userId: string, titleId: string, sinceMs: number): RecommendationLogEntry[] {
+      const rows = db
+        .prepare(`
+          SELECT * FROM recommendation_log
+          WHERE user_id = ? AND title_id = ? AND shown_at >= ? AND outcome IS NULL
+          ORDER BY shown_at DESC
+        `)
+        .all(userId, titleId, sinceMs) as Array<RecommendationLogEntry & { viewer_ids: string; match_reasons: string }>;
+      return rows.map((r) => ({ ...r, viewer_ids: fromJson(r.viewer_ids), match_reasons: fromJson(r.match_reasons) }));
+    },
+
+    getWatchEventTitleId(watchEventId: string): string | null {
+      const row = db.prepare(`SELECT title_id FROM watch_event WHERE id = ?`).get(watchEventId) as { title_id: string } | undefined;
+      return row?.title_id ?? null;
     },
   };
 }

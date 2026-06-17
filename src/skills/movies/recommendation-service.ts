@@ -1,6 +1,9 @@
 import { effectiveWeight } from './decay.js';
+import { computeCurrentAge } from './age.js';
 import type { Repository } from './repository.js';
-import type { MediaType, Preference, Title, User } from './types.js';
+import type { CatalogService } from './catalog.js';
+import type { MediaType, Preference, Title } from './types.js';
+import { normalizeAgeRating } from './adapters/age-rating.js';
 
 export interface RecommendOptions {
   mediaType?: MediaType;
@@ -20,7 +23,6 @@ export interface RecommendationService {
   recommend(viewerIds: string[], opts?: RecommendOptions): Promise<RecommendationCandidate[]>;
 }
 
-// Spec §6.3: tropes predict a child's reaction best, so they outrank themes/genres
 const MULTIPLIERS: Record<string, number> = {
   trope: 3,
   theme: 2,
@@ -30,41 +32,33 @@ const MULTIPLIERS: Record<string, number> = {
 
 const RECENTLY_DISMISSED_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
-function parseRatingAge(rating: string): number {
-  return parseInt(rating, 10);
+function ratingToAge(raw: string | null | undefined): number {
+  if (!raw) return 0;
+  const trimmed = raw.trim();
+  if (/^\d+\+?$/.test(trimmed)) return parseInt(trimmed, 10);
+  const norm = normalizeAgeRating(trimmed);
+  return norm ? parseInt(norm, 10) : 0;
 }
 
 function titleMinAge(title: Title): number {
-  return title.age_rating ? parseRatingAge(title.age_rating) : 0;
-}
-
-// Spec §3.2: prefer birth_date; fall back to age_static + years since age_recorded_at
-function computeCurrentAge(user: User): number | null {
-  if (user.birth_date) {
-    const birth = new Date(user.birth_date);
-    const now = new Date();
-    let age = now.getFullYear() - birth.getFullYear();
-    const m = now.getMonth() - birth.getMonth();
-    if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age--;
-    return age;
-  }
-  if (user.age_static !== null) {
-    if (!user.age_recorded_at) return user.age_static;
-    const recordedYear = new Date(user.age_recorded_at).getFullYear();
-    return user.age_static + (new Date().getFullYear() - recordedYear);
-  }
-  return null;
+  return ratingToAge(title.age_rating);
 }
 
 function featureKey(dimension: string, value: string): string {
   return `${dimension}:${value}`;
 }
 
-function buildJointProfile(viewerPrefs: Preference[][], youngestAge: number | null): Map<string, number> {
-  const perViewer = viewerPrefs.map((prefs) => {
+function displayId(key: string): string {
+  const colon = key.indexOf(':');
+  return colon >= 0 ? key.slice(colon + 1).replace(/_/g, ' ') : key;
+}
+
+function buildJointProfile(viewerPrefs: Preference[][], viewerAges: (number | null)[]): Map<string, number> {
+  const perViewer = viewerPrefs.map((prefs, i) => {
+    const age = viewerAges[i] ?? null;
     const m = new Map<string, number>();
     for (const p of prefs) {
-      m.set(featureKey(p.dimension, p.value), effectiveWeight(p, youngestAge ?? (p.age_at_signal ?? 0)));
+      m.set(featureKey(p.dimension, p.value), effectiveWeight(p, age ?? (p.age_at_signal ?? 0)));
     }
     return m;
   });
@@ -90,13 +84,6 @@ function titleFeatures(title: Title): Array<{ dimension: string; value: string }
   ];
 }
 
-// Spec §6.2 filtering helpers
-
-function isAgeAllowed(title: Title, ceilingAge: number | null): boolean {
-  if (ceilingAge === null) return true;
-  return titleMinAge(title) <= ceilingAge;
-}
-
 function violatesConstraints(
   title: Title,
   constraintValues: { type: string; value: string }[],
@@ -106,7 +93,7 @@ function violatesConstraints(
       const maxMin = parseInt(c.value.replace('max_runtime:', ''), 10);
       if (title.runtime !== null && title.runtime > maxMin) return true;
     } else if (c.type === 'max_age_rating') {
-      const maxAge = parseRatingAge(c.value);
+      const maxAge = ratingToAge(c.value.replace(/^max_age_rating:/, ''));
       if (titleMinAge(title) > maxAge) return true;
     } else if (c.type === 'exclude_trope') {
       if (title.tropes.includes(c.value)) return true;
@@ -115,7 +102,6 @@ function violatesConstraints(
     } else if (c.type === 'exclude_source') {
       if (title.source === c.value) return true;
     } else if (c.type === 'trigger') {
-      // Trigger value "trigger:X" blocks titles with theme:X or trope:X
       const topic = c.value.replace(/^trigger:/, '');
       if (title.themes.includes(`theme:${topic}`) || title.tropes.includes(`trope:${topic}`)) return true;
     }
@@ -133,20 +119,16 @@ function isSuppressed(title: Title, suppressions: { scope: string; value: string
   return false;
 }
 
-export function createRecommendationService(repo: Repository): RecommendationService {
+export function createRecommendationService(repo: Repository, catalogService?: CatalogService): RecommendationService {
   return {
     async recommend(viewerIds, opts = {}) {
       const { mediaType, context, excludeSeen = true, limit = 10, runtimeMaxMin } = opts;
 
-      // Load all viewers
       const allUsers = repo.listUsers();
       const viewers = allUsers.filter((u) => viewerIds.includes(u.id));
       if (viewers.length === 0) return [];
 
-      // Compute current ages; youngest determines the age ceiling
       const ages = viewers.map(computeCurrentAge);
-      const definedAges = ages.filter((a): a is number => a !== null);
-      const youngestAge = definedAges.length > 0 ? Math.min(...definedAges) : null;
 
       // Per-viewer data for filtering
       const constraintsByViewer = viewers.map((u) => repo.getConstraints(u.id).filter((c) => c.active === 1));
@@ -158,24 +140,40 @@ export function createRecommendationService(repo: Repository): RecommendationSer
         new Set(repo.getRecentlyDismissedTitleIds(u.id, Date.now() - RECENTLY_DISMISSED_WINDOW_MS)),
       );
 
-      // Flatten unions for filters (any viewer's constraint/suppression/seen applies)
       const allConstraints = constraintsByViewer.flat();
       const allSuppressions = suppressionsByViewer.flat();
       const seenUnion = new Set<string>([...seenByViewer.flatMap((s) => [...s])]);
       const dismissedUnion = new Set<string>([...dismissedByViewer.flatMap((s) => [...s])]);
 
-      // Generate candidates from cache (spec §6.1: adapters provide search/getDetails but no
-      // bulk-discovery endpoint; candidates accumulate in the cache via log_watch + resolve flows)
+      // Build joint profile early — needed for generate step
+      const viewerPrefs = viewers.map((u) => repo.getPreferences(u.id));
+      const jointProfile = buildJointProfile(viewerPrefs, ages);
+
+      // Generate fresh candidates from adapters based on top positive features
+      if (catalogService?.generate) {
+        const topFeatures = [...jointProfile.entries()]
+          .filter(([, w]) => w > 0)
+          .sort(([, a], [, b]) => b - a)
+          .slice(0, 5)
+          .map(([key]) => {
+            const colon = key.indexOf(':');
+            return { dimension: key.slice(0, colon), value: key.slice(colon + 1) };
+          })
+          .filter((f) => f.dimension === 'genre' || f.dimension === 'theme');
+        if (topFeatures.length > 0) {
+          const genOpts = { limit: 20, ...(mediaType !== undefined && { mediaType }), ...(runtimeMaxMin !== undefined && { runtimeMaxMin }) };
+          await catalogService.generate(topFeatures, genOpts);
+        }
+      }
+
       const candidates = repo.listTitles(mediaType);
 
-      // Filter (spec §6.2 hard rules)
       const runtimeConstraints =
         runtimeMaxMin !== undefined
           ? [...allConstraints, { type: 'max_runtime', value: `max_runtime:${runtimeMaxMin}` }]
           : allConstraints;
 
       const survivors = candidates.filter((title) => {
-        if (!isAgeAllowed(title, youngestAge)) return false;
         if (violatesConstraints(title, runtimeConstraints)) return false;
         if (isSuppressed(title, allSuppressions)) return false;
         if (excludeSeen && seenUnion.has(title.id)) return false;
@@ -183,11 +181,7 @@ export function createRecommendationService(repo: Repository): RecommendationSer
         return true;
       });
 
-      // Build joint preference profile (spec §6.3 intersection/union logic)
-      const viewerPrefs = viewers.map((u) => repo.getPreferences(u.id));
-      const jointProfile = buildJointProfile(viewerPrefs, youngestAge);
-
-      // Score survivors (spec §6.3)
+      // Score survivors
       const scored = survivors.map((title) => {
         let raw = (title.external_rating ?? 0) * 0.01;
         const contributions: Array<{ label: string; value: number }> = [];
@@ -205,7 +199,7 @@ export function createRecommendationService(repo: Repository): RecommendationSer
         const reasons = contributions
           .sort((a, b) => b.value - a.value)
           .slice(0, 3)
-          .map((c) => c.label);
+          .map((c) => displayId(c.label));
 
         return { title, raw, reasons };
       });
@@ -218,11 +212,9 @@ export function createRecommendationService(repo: Repository): RecommendationSer
         match_reasons: reasons,
       }));
 
-      // Sort by score desc, take limit
       results.sort((a, b) => b.match_score - a.match_score);
       const top = results.slice(0, limit);
 
-      // Log every shown candidate (spec §6.3: "Log every shown candidate")
       const sinceMs = Date.now();
       for (const { title, match_score, match_reasons } of top) {
         for (const viewer of viewers) {

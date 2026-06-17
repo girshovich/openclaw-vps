@@ -67,6 +67,40 @@ test('JikanAdapter.getDetails fetches the /full endpoint and normalizes a single
   assert.ok(requestedUrl.includes('/anime/1/full'));
 });
 
+test('JikanAdapter.discover sends genre ids and order_by=score, normalizing results', async () => {
+  let requestedUrl = '';
+  const fetchImpl = (async (url: string | URL | Request) => {
+    requestedUrl = String(url);
+    return jsonResponse({
+      data: [
+        { mal_id: 1, title: 'Cowboy Bebop', score: 8.75, genres: [{ name: 'Action' }], themes: [] },
+      ],
+    });
+  }) as unknown as typeof fetch;
+  const adapter = createJikanAdapter({ resolveGenre: (t) => (t === 'Action' ? 'genre:action' : null), fetchImpl });
+
+  const results = await adapter.discover!({ genres: ['Action'], limit: 5 });
+  assert.ok(requestedUrl.includes('genres=1'), 'Action must map to Jikan genre id 1');
+  assert.ok(requestedUrl.includes('order_by=score'));
+  assert.equal(results.length, 1);
+  assert.equal(results[0]!.sourceId, '1');
+  assert.deepEqual(results[0]!.genres, ['genre:action']);
+});
+
+test('JikanAdapter retries once on 429 then succeeds', async () => {
+  let calls = 0;
+  const fetchImpl = (async () => {
+    calls += 1;
+    if (calls === 1) return jsonResponse({}, 429);
+    return jsonResponse({ data: [{ mal_id: 9, title: 'OK', genres: [], themes: [] }] });
+  }) as unknown as typeof fetch;
+  const adapter = createJikanAdapter({ resolveGenre: () => null, fetchImpl });
+
+  const results = await adapter.search('whatever');
+  assert.equal(calls, 2, 'must retry exactly once after a 429');
+  assert.equal(results[0]!.title, 'OK');
+});
+
 test('JikanAdapter normalizes a movie-length duration ("1 hr 53 min")', async () => {
   const fetchImpl = (async () =>
     jsonResponse({

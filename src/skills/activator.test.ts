@@ -68,6 +68,23 @@ test('registered skills are absent from a session that never mentioned them', ()
   assert.equal(getAllSkills().length, 1); // registered, just not activated for this session
 });
 
+// ── M1: whole-word matching prevents false activations ───────────────────────
+
+test('M1: activator does not trigger on a word that merely contains the example as a substring', () => {
+  const movies = makeStubSkill('movies', 'смотр');
+  registerSkill(movies);
+  // "осмотр" contains "смотр" as substring — should NOT activate with whole-word matching
+  const result = activateSkills('session-m1', 'у меня осмотр у врача');
+  assert.equal(result.length, 0, '"осмотр" must not activate a skill whose example is "смотр"');
+});
+
+test('M1: exact whole-word example still activates', () => {
+  const movies = makeStubSkill('movies', 'фильм');
+  registerSkill(movies);
+  const result = activateSkills('session-m1b', 'что посмотреть, фильм');
+  assert.equal(result.length, 1, '"фильм" as standalone word must activate');
+});
+
 test('core tools stay present regardless of skill activation', () => {
   const echo = makeStubSkill('echo', 'echo this');
   registerSkill(echo);

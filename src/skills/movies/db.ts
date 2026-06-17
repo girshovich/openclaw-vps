@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { seedRecommenderDb } from './seed.js';
 
 export type RecommenderDb = Database.Database;
 
@@ -10,6 +11,7 @@ export function createRecommenderDb(
   const db = new Database(path);
   if (path !== ':memory:') db.pragma('journal_mode = WAL');
   migrate(db);
+  seedRecommenderDb(db);
   return db;
 }
 

@@ -1,4 +1,4 @@
-import type { NormalizedTitle, SourceAdapter } from './types.js';
+import type { NormalizedTitle, SourceAdapter, DiscoverOpts } from './types.js';
 import { normalizeAgeRating } from './age-rating.js';
 
 export interface JikanAdapterOptions {
@@ -8,6 +8,26 @@ export interface JikanAdapterOptions {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type JikanRaw = any;
+
+const JIKAN_GENRE_IDS: Record<string, number> = {
+  Action: 1,
+  Adventure: 2,
+  Comedy: 4,
+  Drama: 8,
+  Fantasy: 10,
+  Horror: 14,
+  Mystery: 7,
+  Romance: 22,
+  'Sci-Fi': 24,
+  'Slice of Life': 36,
+  Sports: 30,
+  Supernatural: 37,
+  Kids: 15,
+  Mecha: 18,
+  Music: 19,
+  School: 23,
+  Magic: 16,
+};
 
 function parseDurationMin(duration: string | null | undefined): number | undefined {
   if (!duration) return undefined;
@@ -21,9 +41,15 @@ export function createJikanAdapter(opts: JikanAdapterOptions): SourceAdapter {
   const fetchImpl = opts.fetchImpl ?? fetch;
 
   async function callApi(path: string): Promise<JikanRaw> {
-    const res = await fetchImpl(`https://api.jikan.moe/v4${path}`);
-    if (!res.ok) throw new Error(`Jikan request failed: ${res.status} ${res.statusText}`);
-    return res.json();
+    let lastErr: Error | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise<void>((r) => setTimeout(r, 500 * attempt + Math.random() * 300));
+      const res = await fetchImpl(`https://api.jikan.moe/v4${path}`);
+      if (res.status === 429 || res.status >= 500) { lastErr = new Error(`Jikan ${res.status}`); continue; }
+      if (!res.ok) throw new Error(`Jikan request failed: ${res.status} ${res.statusText}`);
+      return res.json() as Promise<JikanRaw>;
+    }
+    throw lastErr!;
   }
 
   function normalize(raw: JikanRaw): NormalizedTitle {
@@ -67,6 +93,18 @@ export function createJikanAdapter(opts: JikanAdapterOptions): SourceAdapter {
     async getDetails(sourceId) {
       const data = await callApi(`/anime/${sourceId}/full`);
       return normalize(data.data);
+    },
+
+    async discover(opts: DiscoverOpts) {
+      const params = new URLSearchParams({ order_by: 'score', sort: 'desc' });
+      const genreIds = (opts.genres ?? [])
+        .map((g) => JIKAN_GENRE_IDS[g])
+        .filter((id): id is number => id !== undefined)
+        .join(',');
+      if (genreIds) params.set('genres', genreIds);
+      if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+      const data = await callApi(`/anime?${params.toString()}`);
+      return (data.data ?? []).map((r: JikanRaw) => normalize(r));
     },
   };
 }

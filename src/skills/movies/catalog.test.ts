@@ -6,6 +6,8 @@ import { createRepository } from './repository.js';
 import type { Repository } from './repository.js';
 import { createCatalogService } from './catalog.js';
 import type { SourceAdapter, NormalizedTitle } from './adapters/types.js';
+import type { TropeService } from './trope-service.js';
+import type { Title } from './types.js';
 
 let db: RecommenderDb;
 let repo: Repository;
@@ -101,6 +103,64 @@ test('resolveTitle falls back to Jikan when TMDB returns nothing', async () => {
   const result = await catalog.resolveTitle('spirited away');
   assert.equal(result.match.source, 'jikan');
   assert.equal(result.match.title, 'Spirited Away');
+});
+
+// ── C3: TropeService injection fires extraction on real source hits ────────────
+
+test('C3: resolveTitle calls tropeService.extract after a real source hit with synopsis', async () => {
+  const extracted: Title[] = [];
+  const stubTrope: TropeService = {
+    async extract(title) { extracted.push(title); return []; },
+  };
+  const tmdb = stubAdapter('tmdb', [
+    { source: 'tmdb', sourceId: '1', title: 'With Synopsis', mediaType: 'movie', genres: [], themes: [], synopsis: 'A story.' },
+  ]);
+  const catalog = createCatalogService(repo, { tmdb, jikan: stubAdapter('jikan', []) }, { tropeService: stubTrope });
+
+  const result = await catalog.resolveTitle('with synopsis');
+  // Wait a tick for fire-and-forget
+  await new Promise((r) => setTimeout(r, 10));
+  assert.ok(extracted.some((t) => t.id === result.match.id), 'extract must be called for a title with synopsis');
+});
+
+test('C3: resolveTitle does not call tropeService.extract for manual stubs (no synopsis)', async () => {
+  const extracted: Title[] = [];
+  const stubTrope: TropeService = {
+    async extract(title) { extracted.push(title); return []; },
+  };
+  const catalog = createCatalogService(
+    repo,
+    { tmdb: stubAdapter('tmdb', []), jikan: stubAdapter('jikan', []) },
+    { tropeService: stubTrope },
+  );
+
+  await catalog.resolveTitle('Stub Movie With No Source');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(extracted.length, 0, 'extract must not be called for manual stubs');
+});
+
+test('C3: resolveTitle does not call tropeService.extract when tropes_extracted_at is already set', async () => {
+  const extracted: Title[] = [];
+  const stubTrope: TropeService = {
+    async extract(title) { extracted.push(title); return []; },
+  };
+  // Pre-seed a title with tropes_extracted_at set
+  const tmdb = stubAdapter('tmdb', [
+    { source: 'tmdb', sourceId: '42', title: 'Already Extracted', mediaType: 'movie', genres: [], themes: [], synopsis: 'Synopsis.' },
+  ]);
+  const catalog = createCatalogService(repo, { tmdb, jikan: stubAdapter('jikan', []) }, { tropeService: stubTrope });
+
+  // First call — sets tropes_extracted_at via extract (fire-and-forget)
+  await catalog.resolveTitle('Already Extracted');
+  await new Promise((r) => setTimeout(r, 10));
+  // Manually stamp tropes_extracted_at in DB to simulate completed extraction
+  db.prepare(`UPDATE title SET tropes_extracted_at = ? WHERE source_id = '42'`).run(Date.now());
+  extracted.length = 0;
+
+  // Second call — cache hit, no extract needed; but even if adapter called, extraction skipped
+  await catalog.resolveTitle('Already Extracted');
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(extracted.length, 0, 'extract must not be called when tropes_extracted_at is already set');
 });
 
 test('resolveTitle creates a manual stub when both adapters return nothing', async () => {

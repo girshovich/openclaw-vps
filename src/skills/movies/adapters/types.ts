@@ -19,8 +19,16 @@ export interface NormalizedTitle {
   themes: string[];
 }
 
+export interface DiscoverOpts {
+  genres?: string[];
+  mediaType?: MediaType;
+  runtimeMaxMin?: number;
+  limit?: number;
+}
+
 export interface SourceAdapter {
   readonly source: 'tmdb' | 'jikan';
   search(query: string, opts?: { mediaType?: MediaType }): Promise<NormalizedTitle[]>;
   getDetails(sourceId: string): Promise<NormalizedTitle>;
+  discover?(opts: DiscoverOpts): Promise<NormalizedTitle[]>;
 }

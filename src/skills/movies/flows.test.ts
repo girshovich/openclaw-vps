@@ -247,21 +247,22 @@ test('Flow 9: suppress a genre → recommend no longer returns titles in that ge
   assert.ok(!hasAnimationTitle, 'suppressed genre must not appear in recommendations');
 });
 
-// ── Flow 10: Joint watch — youngest age ceiling (§11.10) ──────────────────────
+// ── Flow 10: Joint watch — no automatic age ceiling (§4.6.2) ──────────────────
 
-test('Flow 10: joint recommend filters to youngest viewer age ceiling', async () => {
+test('Flow 10: joint recommend keeps higher-rated titles and surfaces age_rating', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const adult = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Михаил', age_static: 38 });
   const child = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 6 });
 
-  // Title rated 0 (all ages) and title rated 18 (adults only)
   repo.upsertTitle({ source: 'tmdb', source_id: 'g1', title: 'Малыш', media_type: 'movie', genres: ['genre:animation'], age_rating: '0' });
   repo.upsertTitle({ source: 'tmdb', source_id: 'r1', title: 'Крепкий Орешек', media_type: 'movie', genres: ['genre:action'], age_rating: '18' });
 
-  const recRes = JSON.parse(await skill.executeTool(makeCall('recommend', { viewer_ids: [adult.id, child.id], exclude_seen: false }), ctx)) as { candidates: Array<{ title: string }> };
+  const recRes = JSON.parse(await skill.executeTool(makeCall('recommend', { viewer_ids: [adult.id, child.id], exclude_seen: false }), ctx)) as { candidates: Array<{ title: string; age_rating: string | null }> };
   const titles = recRes.candidates.map((c) => c.title);
   assert.ok(titles.includes('Малыш'), 'age-0 title should appear for joint watch');
-  assert.ok(!titles.includes('Крепкий Орешек'), 'age-18 title must be filtered out by youngest-viewer ceiling');
+  assert.ok(titles.includes('Крепкий Орешек'), 'age-18 title must NOT be hard-filtered: age is a soft preference now');
+  const adultTitle = recRes.candidates.find((c) => c.title === 'Крепкий Орешек');
+  assert.equal(adultTitle?.age_rating, '18', 'age_rating must be surfaced so the model can soft-prefer / flag it');
 });
 
 // ── Flow 11: Quick mode — hard runtime filter (§11.11) ───────────────────────
@@ -291,6 +292,56 @@ test('Flow 12: recommend with context=seasonal returns candidates array without 
   assert.ok(Array.isArray(recRes.candidates));
 });
 
+// ── H7: age_recorded_at persisted when using age ─────────────────────────────
+
+test('H7: manage_viewers add with age sets age_recorded_at', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const addRes = JSON.parse(await skill.executeTool(makeCall('manage_viewers', { action: 'add', name: 'Ника', age: 4 }), ctx)) as { user_id: string };
+  const user = repo.listUsers().find((u) => u.id === addRes.user_id)!;
+  assert.ok(user.age_recorded_at, 'age_recorded_at must be set when age is provided');
+  assert.match(user.age_recorded_at!, /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test('H7: setup with age sets age_recorded_at', async () => {
+  const setupRes = JSON.parse(await skill.executeTool(makeCall('setup', { members_free_text: 'я Михаил 38 и сын Тимур 6' }), ctx)) as { created_users: Array<{ id: string; age_static: number | null; age_recorded_at: string | null }> };
+  const timurid = setupRes.created_users.find((u) => u.age_static !== null);
+  assert.ok(timurid?.age_recorded_at, 'age_recorded_at must be set for age-based viewers in setup');
+});
+
+// ── H4: undo_last restores preference weights after feedback ──────────────────
+
+test('H4: undo feedback restores prior preference weights', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+  const title = repo.upsertTitle({ source: 'tmdb', source_id: 'kfp', title: 'Кунг-фу Панда', media_type: 'movie', genres: ['genre:animation'], tropes: ['trope:underdog_hero'] });
+  const event = repo.createWatchEvent({ title_id: title.id, viewers: [{ user_id: user.id, age_at_watch: 7 }] });
+
+  // Apply feedback
+  await skill.executeTool(makeCall('add_feedback', { title_query: event.id, viewer_id: user.id, rating: 'loved' }), ctx);
+  const afterFeedback = repo.getPreferences(user.id).find((p) => p.value === 'trope:underdog_hero');
+  assert.ok(afterFeedback && afterFeedback.weight > 0, 'preference must be set after feedback');
+
+  // Undo
+  await skill.executeTool(makeCall('undo_last', {}), ctx);
+  const afterUndo = repo.getPreferences(user.id).find((p) => p.value === 'trope:underdog_hero');
+  assert.ok(!afterUndo || afterUndo.weight === 0, 'preference must be restored to pre-feedback state after undo');
+});
+
+test('H4: undo user_removed restores the user', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const addRes = JSON.parse(await skill.executeTool(makeCall('manage_viewers', { action: 'add', name: 'Ника', age: 5 }), ctx)) as { user_id: string };
+  const nikaId = addRes.user_id;
+
+  // Remove user
+  await skill.executeTool(makeCall('manage_viewers', { action: 'remove', user_id: nikaId, confirm: true }), ctx);
+  assert.equal(repo.listUsers().length, 0, 'user must be removed');
+
+  // Undo
+  await skill.executeTool(makeCall('undo_last', {}), ctx);
+  const users = repo.listUsers();
+  assert.ok(users.some((u) => u.id === nikaId), 'user must be restored after undo');
+});
+
 // ── Flow 13: Correct a mistake via undo_last (§11.13) ────────────────────────
 
 test('Flow 13: undo_last reverts feedback then watch event, leaving clean state', async () => {
@@ -318,4 +369,43 @@ test('Flow 13: undo_last reverts feedback then watch event, leaving clean state'
   const undo2 = JSON.parse(await skill.executeTool(makeCall('undo_last', {}), ctx)) as { reverted_action: string };
   assert.ok(undo2.reverted_action.includes(watchId));
   assert.equal((db.prepare(`SELECT COUNT(*) as c FROM watch_event WHERE id = ?`).get(watchId) as { c: number }).c, 0);
+});
+
+// ── M3: add_feedback resolves against watch history before re-hitting the catalog ─
+
+test('M3: add_feedback by title name finds the existing watch event without re-resolving through the catalog', async () => {
+  // A "fragmenting" catalog: every resolveTitle creates a brand-new title row (new source_id).
+  // If add_feedback re-resolved through it, it would land on a different title_id than
+  // log_watch recorded → "No watch event found". History-first resolution avoids that.
+  let resolveCalls = 0;
+  const fragmentingCatalog: CatalogService = {
+    async resolveTitle(query): Promise<ResolveResult> {
+      resolveCalls += 1;
+      const match = repo.upsertTitle({
+        source: 'tmdb',
+        source_id: `frag-${resolveCalls}`,
+        title: query,
+        media_type: 'movie',
+        genres: ['genre:animation'],
+      });
+      return { match, alternatives: [] };
+    },
+  };
+  const fragSkill = createMoviesSkill({ db, catalogService: fragmentingCatalog, callLlm: defaultLlm });
+
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+
+  // Log a watch via the stub path (resolveCalls → 1, creates frag-1)
+  await fragSkill.executeTool(makeCall('log_watch', { title_query: 'Кунг-фу Панда', viewer_ids: [user.id] }), ctx);
+
+  // Feedback by the same name — must match watch history, NOT re-resolve to frag-2
+  const fbRes = JSON.parse(await fragSkill.executeTool(
+    makeCall('add_feedback', { title_query: 'Кунг-фу Панда', viewer_id: user.id, rating: 'loved' }),
+    ctx,
+  )) as { feedback_id?: string; error?: string };
+
+  assert.ok(!fbRes.error, `add_feedback must not error: ${fbRes.error}`);
+  assert.ok(fbRes.feedback_id, 'feedback must be recorded against the existing watch event');
+  assert.equal(resolveCalls, 1, 'add_feedback must resolve from history, not re-hit the catalog');
 });

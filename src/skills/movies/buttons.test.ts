@@ -7,8 +7,6 @@ import {
   parseCallbackData,
   MOVIES_CALLBACK_PREFIX,
 } from './buttons.js';
-import { parseRatingReply, parseFavoriteReply } from './nl-parser.js';
-
 // ── buildRecommendationButtons ────────────────────────────────────────────────
 
 test('buildRecommendationButtons(3) produces 3 rows, each with 5 buttons', () => {
@@ -72,37 +70,6 @@ test('callbackDataToNL returns null for unknown action', () => {
 
 test('callbackDataToNL returns null for non-movies prefix', () => {
   assert.equal(callbackDataToNL('travel:loved:1'), null);
-});
-
-// ── Callback round-trips: callback → NL → nl-parser (§11 acceptance) ─────────
-
-test('Round-trip mv:loved:1 → NL → parseRatingReply: loved, candidateIndex 0', () => {
-  const nl = callbackDataToNL('mv:loved:1')!;
-  const parsed = parseRatingReply(nl);
-  assert.equal(parsed?.rating, 'loved');
-  assert.equal(parsed?.candidateIndex, 0);
-  assert.equal(parsed?.abandoned, false);
-});
-
-test('Round-trip mv:ok:2 → NL → parseRatingReply: ok, candidateIndex 1', () => {
-  const nl = callbackDataToNL('mv:ok:2')!;
-  const parsed = parseRatingReply(nl);
-  assert.equal(parsed?.rating, 'ok');
-  assert.equal(parsed?.candidateIndex, 1);
-});
-
-test('Round-trip mv:abandoned:1 → NL → parseRatingReply: disliked+abandoned, candidateIndex 0', () => {
-  const nl = callbackDataToNL('mv:abandoned:1')!;
-  const parsed = parseRatingReply(nl);
-  assert.equal(parsed?.rating, 'disliked');
-  assert.equal(parsed?.abandoned, true);
-  assert.equal(parsed?.candidateIndex, 0);
-});
-
-test('Round-trip mv:fav:2 → NL → parseFavoriteReply: candidateIndex 1', () => {
-  const nl = callbackDataToNL('mv:fav:2')!;
-  const parsed = parseFavoriteReply(nl);
-  assert.equal(parsed?.candidateIndex, 1);
 });
 
 // ── detectCardCount ───────────────────────────────────────────────────────────

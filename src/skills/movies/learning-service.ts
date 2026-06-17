@@ -44,11 +44,13 @@ export function createLearningService(repo: Repository): LearningService {
         const delta = deltaFor(feedback.rating, feedback.abandoned === 1, dimension);
         if (delta === null) continue;
         const current = existing.get(`${dimension}:${value}`) ?? 0;
+        const newWeight = clamp(current + delta, -1, 1);
+        existing.set(`${dimension}:${value}`, newWeight);
         repo.upsertPreference({
           user_id: feedback.user_id,
           dimension,
           value,
-          weight: clamp(current + delta, -1, 1),
+          weight: newWeight,
           origin: 'feedback',
           age_at_signal: age_at_watch,
         });
@@ -57,6 +59,43 @@ export function createLearningService(repo: Repository): LearningService {
       for (const tag of feedback.tags) {
         if (tag.startsWith('trigger:')) {
           repo.upsertConstraint({ user_id: feedback.user_id, type: 'trigger', value: tag, origin: 'feedback' });
+        } else if (tag === 'too_long') {
+          if (title.runtime !== null) {
+            repo.upsertConstraint({
+              user_id: feedback.user_id,
+              type: 'max_runtime',
+              value: `max_runtime:${Math.max(30, title.runtime - 15)}`,
+              origin: 'feedback',
+            });
+          }
+        } else if (tag === 'too_scary') {
+          const scaryFeatures: Array<{ dimension: PreferenceDimension; value: string }> = [
+            ...title.themes.map((value) => ({ dimension: 'theme' as const, value })),
+            ...title.tropes.map((value) => ({ dimension: 'trope' as const, value })),
+          ];
+          for (const { dimension, value } of scaryFeatures) {
+            const current = existing.get(`${dimension}:${value}`) ?? 0;
+            repo.upsertPreference({
+              user_id: feedback.user_id,
+              dimension,
+              value,
+              weight: clamp(current - 0.3, -1, 1),
+              origin: 'feedback',
+              age_at_signal: age_at_watch,
+            });
+          }
+        } else if (tag === 'boring') {
+          for (const value of title.tropes) {
+            const current = existing.get(`trope:${value}`) ?? 0;
+            repo.upsertPreference({
+              user_id: feedback.user_id,
+              dimension: 'trope',
+              value,
+              weight: clamp(current - 0.3, -1, 1),
+              origin: 'feedback',
+              age_at_signal: age_at_watch,
+            });
+          }
         }
       }
 

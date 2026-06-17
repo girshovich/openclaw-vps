@@ -1,6 +1,7 @@
 import type { Repository } from './repository.js';
-import type { NewTitle, Title, MediaType } from './types.js';
+import type { NewTitle, Title, MediaType, TitleSource } from './types.js';
 import type { NormalizedTitle, SourceAdapter } from './adapters/types.js';
+import type { TropeService } from './trope-service.js';
 
 export interface ResolveResult {
   match: Title;
@@ -12,8 +13,13 @@ export interface CatalogAdapters {
   jikan: SourceAdapter;
 }
 
+export interface CatalogServiceOptions {
+  tropeService?: TropeService;
+}
+
 export interface CatalogService {
   resolveTitle(query: string, opts?: { mediaType?: MediaType }): Promise<ResolveResult>;
+  generate?(features: { dimension: string; value: string }[], opts: { mediaType?: MediaType; runtimeMaxMin?: number; limit?: number }): Promise<Title[]>;
 }
 
 function toNewTitle(t: NormalizedTitle): NewTitle {
@@ -34,18 +40,28 @@ function toNewTitle(t: NormalizedTitle): NewTitle {
   };
 }
 
-export function createCatalogService(repo: Repository, adapters: CatalogAdapters): CatalogService {
+export function createCatalogService(
+  repo: Repository,
+  adapters: CatalogAdapters,
+  opts: CatalogServiceOptions = {},
+): CatalogService {
+  function maybeExtractTropes(title: Title): void {
+    if (!opts.tropeService) return;
+    if (title.tropes_extracted_at || !title.synopsis) return;
+    void opts.tropeService.extract(title).catch(() => { /* extraction is best-effort */ });
+  }
+
   return {
-    async resolveTitle(query, opts) {
+    async resolveTitle(query, resolveOpts) {
       const cached = repo.searchCachedTitles(query);
       if (cached.length > 0) {
         return { match: cached[0]!, alternatives: cached.slice(1) };
       }
 
-      const primary = opts?.mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
-      const fallback = opts?.mediaType === 'anime' ? null : adapters.jikan;
+      const primary = resolveOpts?.mediaType === 'anime' ? adapters.jikan : adapters.tmdb;
+      const fallback = resolveOpts?.mediaType === 'anime' ? null : adapters.jikan;
 
-      let found = await primary.search(query, opts?.mediaType ? { mediaType: opts.mediaType } : undefined);
+      let found = await primary.search(query, resolveOpts?.mediaType ? { mediaType: resolveOpts.mediaType } : undefined);
 
       if (found.length === 0 && fallback) {
         found = await fallback.search(query);
@@ -56,7 +72,7 @@ export function createCatalogService(repo: Repository, adapters: CatalogAdapters
           source: 'manual',
           source_id: query.toLowerCase().trim().replace(/\s+/g, '-'),
           title: query,
-          media_type: opts?.mediaType ?? 'movie',
+          media_type: resolveOpts?.mediaType ?? 'movie',
         });
         return { match: stub, alternatives: [] };
       }
@@ -65,8 +81,37 @@ export function createCatalogService(repo: Repository, adapters: CatalogAdapters
       const detailAdapter = top!.source === 'jikan' ? adapters.jikan : adapters.tmdb;
       const detailed = await detailAdapter.getDetails(top!.sourceId);
       const match = repo.upsertTitle(toNewTitle(detailed));
+      maybeExtractTropes(match);
       const alternatives = rest.map((r) => repo.upsertTitle(toNewTitle(r)));
       return { match, alternatives };
+    },
+
+    async generate(features, genOpts) {
+      const { mediaType, runtimeMaxMin, limit = 20 } = genOpts;
+      const sources: Array<'tmdb' | 'jikan'> = mediaType === 'anime' ? ['jikan'] : ['tmdb', 'jikan'];
+      const allTitles: Title[] = [];
+
+      for (const source of sources) {
+        const adapter = source === 'jikan' ? adapters.jikan : adapters.tmdb;
+        if (!adapter.discover) continue;
+        const genres = features
+          .filter((f) => f.dimension === 'genre')
+          .flatMap((f) => repo.reverseTaxonomy(source as TitleSource, f.value))
+          .filter((v, i, a) => a.indexOf(v) === i);
+        try {
+          const discoverOpts = { genres, limit, ...(mediaType !== undefined && { mediaType }), ...(runtimeMaxMin !== undefined && { runtimeMaxMin }) };
+          const discovered = await adapter.discover(discoverOpts);
+          for (const norm of discovered) {
+            const title = repo.upsertTitle(toNewTitle(norm));
+            maybeExtractTropes(title);
+            allTitles.push(title);
+          }
+        } catch {
+          // discovery is best-effort
+        }
+      }
+
+      return allTitles;
     },
   };
 }

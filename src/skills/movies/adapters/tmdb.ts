@@ -1,4 +1,4 @@
-import type { NormalizedTitle, SourceAdapter } from './types.js';
+import type { NormalizedTitle, SourceAdapter, DiscoverOpts } from './types.js';
 import { normalizeAgeRating } from './age-rating.js';
 
 export interface TmdbAdapterOptions {
@@ -8,6 +8,27 @@ export interface TmdbAdapterOptions {
 }
 
 class TmdbNotFoundError extends Error {}
+
+const TMDB_GENRE_IDS: Record<string, string> = {
+  Action: '28',
+  Adventure: '12',
+  Animation: '16',
+  Comedy: '35',
+  Crime: '80',
+  Documentary: '99',
+  Drama: '18',
+  Family: '10751',
+  Fantasy: '14',
+  History: '36',
+  Horror: '27',
+  Music: '10402',
+  Mystery: '9648',
+  Romance: '10749',
+  'Science Fiction': '878',
+  Thriller: '53',
+  War: '10752',
+  Western: '37',
+};
 
 function yearFrom(date: string | null | undefined): number | undefined {
   return date ? Number(date.slice(0, 4)) : undefined;
@@ -29,10 +50,16 @@ export function createTmdbAdapter(opts: TmdbAdapterOptions): SourceAdapter {
     const url = new URL(`https://api.themoviedb.org/3${path}`);
     url.searchParams.set('api_key', apiKey);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const res = await fetchImpl(url.toString());
-    if (res.status === 404) throw new TmdbNotFoundError(`TMDB resource not found: ${path}`);
-    if (!res.ok) throw new Error(`TMDB request failed: ${res.status} ${res.statusText}`);
-    return res.json();
+    let lastErr: Error | undefined;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise<void>((r) => setTimeout(r, 500 * attempt + Math.random() * 300));
+      const res = await fetchImpl(url.toString());
+      if (res.status === 404) throw new TmdbNotFoundError(`TMDB resource not found: ${path}`);
+      if (res.status === 429 || res.status >= 500) { lastErr = new Error(`TMDB ${res.status}`); continue; }
+      if (!res.ok) throw new Error(`TMDB request failed: ${res.status} ${res.statusText}`);
+      return res.json() as Promise<TmdbRaw>;
+    }
+    throw lastErr!;
   }
 
   function normalizeSearchResult(raw: TmdbRaw, mediaType: 'movie' | 'series'): NormalizedTitle {
@@ -133,6 +160,21 @@ export function createTmdbAdapter(opts: TmdbAdapterOptions): SourceAdapter {
         const raw = await callApi(`/tv/${sourceId}`, { append_to_response: 'content_ratings' });
         return normalizeTvDetails(raw);
       }
+    },
+
+    async discover(opts: DiscoverOpts) {
+      const mediaType = opts.mediaType === 'series' ? 'series' : 'movie';
+      const endpoint = mediaType === 'series' ? '/discover/tv' : '/discover/movie';
+      const genreIds = (opts.genres ?? [])
+        .map((g) => TMDB_GENRE_IDS[g])
+        .filter((id): id is string => id !== undefined)
+        .join(',');
+      const params: Record<string, string> = { sort_by: 'popularity.desc' };
+      if (genreIds) params['with_genres'] = genreIds;
+      if (opts.runtimeMaxMin !== undefined) params['with_runtime.lte'] = String(opts.runtimeMaxMin);
+      const data = await callApi(endpoint, params);
+      const results: TmdbRaw[] = data.results ?? [];
+      return results.slice(0, opts.limit ?? 20).map((r: TmdbRaw) => normalizeSearchResult(r, mediaType));
     },
   };
 }

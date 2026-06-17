@@ -119,3 +119,38 @@ test('a trigger-prefixed tag creates a user_constraint', () => {
   assert.equal(trigger?.value, 'trigger:loud_noises');
   assert.equal(trigger?.origin, 'feedback');
 });
+
+// ── H3: too_long / too_scary / boring tags affect the profile ─────────────────
+
+test('H3: too_long tag creates a max_runtime constraint below the title runtime', () => {
+  title = repo.upsertTitle({ source: 'tmdb', source_id: '2', title: 'Long Movie', media_type: 'movie', genres: [], runtime: 150 });
+  const fb = watchAndFeedback('disliked', { tags: ['too_long'] });
+  learning.applyFeedback(fb.id);
+
+  const constraints = repo.getConstraints(user.id);
+  const maxRuntime = constraints.find((c) => c.type === 'max_runtime');
+  assert.ok(maxRuntime, 'max_runtime constraint must be created');
+  const limit = parseInt(maxRuntime!.value.replace('max_runtime:', ''), 10);
+  assert.ok(limit < 150, 'max_runtime must be below title runtime');
+});
+
+test('H3: boring tag applies extra negative delta to tropes (stronger than plain disliked)', () => {
+  // Disliked without tags
+  const fb1 = watchAndFeedback('disliked');
+  learning.applyFeedback(fb1.id);
+  const dislikedWeight = repo.getPreferences(user.id).find((p) => p.value === 'trope:underdog_hero')?.weight ?? 0;
+
+  // Fresh state for boring comparison
+  db = createRecommenderDb(':memory:');
+  repo = createRepository(db);
+  learning = createLearningService(repo);
+  const hh = repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  user = repo.createUser({ household_id: hh.id, name: 'A' });
+  title = repo.upsertTitle({ source: 'tmdb', source_id: '1', title: 'Kung Fu Panda', media_type: 'movie', genres: ['genre:action', 'genre:comedy'], themes: ['theme:friendship'], tropes: ['trope:underdog_hero'] });
+
+  const fb2 = watchAndFeedback('disliked', { tags: ['boring'] });
+  learning.applyFeedback(fb2.id);
+  const boringWeight = repo.getPreferences(user.id).find((p) => p.value === 'trope:underdog_hero')?.weight ?? 0;
+
+  assert.ok(boringWeight < dislikedWeight, 'boring tag must push tropes more negative than plain disliked');
+});

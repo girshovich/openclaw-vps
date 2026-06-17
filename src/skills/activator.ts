@@ -7,9 +7,17 @@ const MAX_ACTIVE_SKILLS = 3;
 // In-memory cache: sessionId -> active skill names. Write-through to DB.
 const activeSkillsBySession = new Map<string, string[]>();
 
+function tokenize(text: string): string[] {
+  return text.toLowerCase().split(/[\s.,!?;:'"()\[\]{}<>\/\\—–-]+/).filter(Boolean);
+}
+
 function matchesSkill(skill: Skill, message: string): boolean {
-  const lower = message.toLowerCase();
-  return skill.examples.some((example) => lower.includes(example.toLowerCase()));
+  const msgTokens = tokenize(message);
+  return skill.examples.some((example) => {
+    const exTokens = tokenize(example);
+    if (exTokens.length === 0) return false;
+    return msgTokens.some((_, i) => exTokens.every((et, j) => msgTokens[i + j] === et));
+  });
 }
 
 function loadFromDb(sessionId: string): string[] {
