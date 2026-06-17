@@ -125,10 +125,15 @@ export function initDb(): void {
     CREATE INDEX IF NOT EXISTS idx_cron_next         ON cron_jobs (next_run_at, status);
   `);
 
+  if (!process.env['DB_PATH']) {
+    console.warn('[sqlite] DB_PATH is not set — using in-memory database. All data will be lost on restart.');
+  }
+
   // Migrations for existing databases
   try { db.exec(`ALTER TABLE tasks ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE tasks ADD COLUMN last_retried_at INTEGER`); } catch { /* already exists */ }
   try { db.exec(`ALTER TABLE sessions ADD COLUMN cost_usd REAL NOT NULL DEFAULT 0`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE sessions ADD COLUMN active_skills TEXT NOT NULL DEFAULT '[]'`); } catch { /* already exists */ }
 }
 
 // ── Sessions ──────────────────────────────────────────────────────────────────
@@ -179,6 +184,15 @@ export function getActiveSessions(): DbSession[] {
 export function updateSessionStatus(sessionId: string, status: SessionStatus): void {
   db.prepare(`UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?`)
     .run(status, Date.now(), sessionId);
+}
+
+export function getSessionActiveSkills(sessionId: string): string[] {
+  const row = db.prepare(`SELECT active_skills FROM sessions WHERE session_id = ?`).get(sessionId) as { active_skills: string } | undefined;
+  try { return JSON.parse(row?.active_skills ?? '[]') as string[]; } catch { return []; }
+}
+
+export function setSessionActiveSkills(sessionId: string, skills: string[]): void {
+  db.prepare(`UPDATE sessions SET active_skills = ? WHERE session_id = ?`).run(JSON.stringify(skills), sessionId);
 }
 
 // ── Messages ──────────────────────────────────────────────────────────────────
