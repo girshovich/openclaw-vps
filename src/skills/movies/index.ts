@@ -306,9 +306,36 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
         if (action === 'set_preferences') {
           const freeText = inp['free_text'] as string | undefined;
           if (!freeText) return JSON.stringify({ error: 'free_text is required for set_preferences.' });
-          const extracted = await profileService.setPreferences(userId, freeText, inp['loved_titles'] as string[] | undefined);
+          const lovedTitleNames = inp['loved_titles'] as string[] | undefined;
+
+          // Auto-log each loved title as watched + loved so history is populated immediately.
+          const loggedTitles: string[] = [];
+          if (lovedTitleNames && lovedTitleNames.length > 0) {
+            const user = repo.listUsers().find((u) => u.id === userId);
+            if (user) {
+              const seenIds = new Set(repo.getWatchHistory(userId).map((e) => e.title_id));
+              await Promise.allSettled(
+                lovedTitleNames.map(async (name) => {
+                  try {
+                    const { match } = await catalogService.resolveTitle(name);
+                    if (seenIds.has(match.id)) return;
+                    const event = repo.createWatchEvent({
+                      title_id: match.id,
+                      viewers: [{ user_id: userId, age_at_watch: computeCurrentAge(user) ?? 0 }],
+                    });
+                    const feedback = repo.addFeedback({ watch_event_id: event.id, user_id: userId, rating: 'loved', abandoned: 0 });
+                    learningService.applyFeedback(feedback.id);
+                    repo.pushAction({ action_type: 'feedback_added', entity_ref: `feedback:${feedback.id}`, previous_state: null });
+                    loggedTitles.push(match.title);
+                  } catch { /* unresolvable title — skipped */ }
+                }),
+              );
+            }
+          }
+
+          const extracted = await profileService.setPreferences(userId, freeText, lovedTitleNames);
           const summary = profileService.summary(userId);
-          return JSON.stringify({ profile_summary: summary, extracted });
+          return JSON.stringify({ profile_summary: summary, extracted, logged_as_watched: loggedTitles });
         }
         if (action === 'add_to_watchlist') {
           const titleQuery = inp['title_query'] as string;
@@ -425,22 +452,27 @@ export function createMoviesSkill(deps: MovieSkillDeps): Skill {
     tools: MOVIES_TOOLS,
     executeTool,
     systemPromptFragment: [
-      'Когда пользователь упоминает просмотр фильмов/аниме, оценки или рекомендации — используй инструменты movies skill.',
-      'Если зрители не настроены (manage_viewers action=list возвращает пустой список), сначала спроси имена и возраст домашних, затем вызови setup. Не давай рекомендации до завершения настройки.',
+      'Use movies skill tools whenever the user mentions films, anime, ratings, recommendations, or watch history.',
+      'If no viewers are configured (manage_viewers action=list returns empty), ask for household members names and ages first, then call setup. Do not recommend before setup is complete.',
       '',
-      'Карточка рекомендации выглядит так:',
-      '🎬 1. Название (год) · возраст · хх мин · ⭐N.N · ИСТОЧНИК',
-      'Краткое описание (до 120 символов)',
-      'Почему: совпадение N% — ✓тег ✓тег',
+      '== Logging watched / liked titles ==',
+      'When the user says they liked, watched, or have seen specific titles — call log_watch + add_feedback(rating=loved) for each one directly. Do NOT use set_preferences for this.',
+      'Use set_preferences(loved_titles=[...]) only when the user is describing general taste and naming titles as examples of what they like; loved_titles will be auto-logged as watched+loved by the tool.',
+      'For franchises or numbered series ("episodes 1–9", "all parts", "seasons 1–3") — emit one log_watch call per installment in a single response. They execute in parallel so latency is the same as one call.',
       '',
-      'После показа карточек добавь подсказку: (оцените: «1 зашло», «2 так себе», «бросили 1»)',
-      'Оценки пользователя:',
-      '  «1 зашло» / «1 понравилось» → add_feedback(rating=loved)',
-      '  «2 так себе» / «2 нормально» → add_feedback(rating=ok)',
-      '  «3 не зашло» → add_feedback(rating=disliked)',
-      '  «бросили 2» → add_feedback(rating=disliked, abandoned=true)',
-      '  «в избранное 1» → manage_taste(action=add_to_watchlist, status=favorite)',
-      'При негативной оценке задай уточняющий вопрос: «страшно / скучно / длинно?»',
+      '== Recommendation card format ==',
+      '🎬 1. Title (year) · age rating · XX min · ⭐N.N · SOURCE',
+      'Short description (up to 120 chars)',
+      'Why: match N% — ✓tag ✓tag',
+      '',
+      'After showing cards add a hint: (rate: "1 loved it", "2 it was ok", "dropped 1")',
+      'User rating shortcuts (accept in any language):',
+      '  "1 loved" / "1 зашло" / "1 понравилось" → add_feedback(rating=loved)',
+      '  "2 ok" / "2 так себе" / "2 нормально" → add_feedback(rating=ok)',
+      '  "3 disliked" / "3 не зашло" → add_feedback(rating=disliked)',
+      '  "dropped 2" / "бросили 2" → add_feedback(rating=disliked, abandoned=true)',
+      '  "fav 1" / "в избранное 1" → manage_taste(action=add_to_watchlist, status=favorite)',
+      'On a negative rating ask a follow-up: "too scary / boring / long?"',
     ].join('\n'),
     migrate() {
       // db schema already applied by createRecommenderDb at construction time

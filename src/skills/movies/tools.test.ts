@@ -152,6 +152,42 @@ test('manage_taste set_preferences calls ProfileService and returns profile_summ
   assert.ok(res.extracted.preferences.length > 0);
 });
 
+test('manage_taste set_preferences with loved_titles auto-logs them as watched+loved', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+
+  const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
+  const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
+
+  const res = JSON.parse(await testSkill.executeTool(
+    makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Kung Fu Panda', 'Coco'] }),
+    ctx,
+  )) as { logged_as_watched: string[] };
+
+  assert.equal(res.logged_as_watched.length, 2);
+  assert.equal(repo.getWatchHistory(user.id).length, 2);
+  // learning applied loved feedback → at least one positive preference weight
+  assert.ok(repo.getPreferences(user.id).some((p) => p.weight > 0));
+});
+
+test('manage_taste set_preferences with loved_titles skips already-logged titles', async () => {
+  repo.createHousehold({ timezone: 'UTC', language: 'ru' });
+  const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
+  const title = repo.upsertTitle({ source: 'tmdb', source_id: 'mock-kung-fu-panda', title: 'Kung Fu Panda', media_type: 'movie' });
+  repo.createWatchEvent({ title_id: title.id, viewers: [{ user_id: user.id, age_at_watch: 7 }] });
+
+  const mockLlm = async () => JSON.stringify({ preferences: [], constraints: [] });
+  const testSkill = createMoviesSkill({ db, catalogService: mockCatalog(repo), callLlm: mockLlm });
+
+  await testSkill.executeTool(
+    makeCall('manage_taste', { action: 'set_preferences', user_id: user.id, free_text: 'loves animation', loved_titles: ['Kung Fu Panda'] }),
+    ctx,
+  );
+
+  // Should still be only 1 watch event — no duplicate
+  assert.equal(repo.getWatchHistory(user.id).length, 1);
+});
+
 test('manage_taste suppress adds a suppression entry', async () => {
   repo.createHousehold({ timezone: 'UTC', language: 'ru' });
   const user = repo.createUser({ household_id: repo.getHousehold()!.id, name: 'Тимур', age_static: 7 });
