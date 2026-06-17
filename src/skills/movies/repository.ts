@@ -15,6 +15,7 @@ import type {
   Title,
   NewTitle,
   TitleSource,
+  MediaType,
   NewWatchEvent,
   WatchEvent,
   NewFeedback,
@@ -61,6 +62,10 @@ export interface Repository {
   markFeedbackApplied(id: string): void;
   getWatchHistory(userId: string, range?: DateRange): WatchEntry[];
   getFeedbackContext(feedbackId: string): FeedbackContext | null;
+
+  listTitles(mediaType?: MediaType): Title[];
+  getWatchedTitleIds(userId: string): string[];
+  getRecentlyDismissedTitleIds(userId: string, sinceMs: number): string[];
 
   addWatchlist(w: NewWatchlist): Watchlist;
   getWatchlist(userId: string, status?: WatchlistStatus): Watchlist[];
@@ -360,6 +365,34 @@ export function createRepository(db: RecommenderDb): Repository {
         title: decodeTitle(titleRow),
         age_at_watch: context_age_at_watch,
       };
+    },
+
+    listTitles(mediaType?: MediaType): Title[] {
+      const rows = mediaType
+        ? (db.prepare(`SELECT * FROM title WHERE media_type = ?`).all(mediaType) as TitleRow[])
+        : (db.prepare(`SELECT * FROM title`).all() as TitleRow[]);
+      return rows.map(decodeTitle);
+    },
+
+    getWatchedTitleIds(userId: string): string[] {
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT we.title_id FROM watch_event we
+           JOIN watch_event_viewer wev ON wev.watch_event_id = we.id
+           WHERE wev.user_id = ?`,
+        )
+        .all(userId) as Array<{ title_id: string }>;
+      return rows.map((r) => r.title_id);
+    },
+
+    getRecentlyDismissedTitleIds(userId: string, sinceMs: number): string[] {
+      const rows = db
+        .prepare(
+          `SELECT DISTINCT title_id FROM recommendation_log
+           WHERE user_id = ? AND outcome = 'dismissed' AND shown_at >= ?`,
+        )
+        .all(userId, sinceMs) as Array<{ title_id: string }>;
+      return rows.map((r) => r.title_id);
     },
 
     addWatchlist(w: NewWatchlist): Watchlist {
