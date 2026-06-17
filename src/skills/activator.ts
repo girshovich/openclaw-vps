@@ -16,7 +16,10 @@ function matchesSkill(skill: Skill, message: string): boolean {
   return skill.examples.some((example) => {
     const exTokens = tokenize(example);
     if (exTokens.length === 0) return false;
-    return msgTokens.some((_, i) => exTokens.every((et, j) => msgTokens[i + j] === et));
+    // Prefix (stem) match anchored at word start: an example token "фильм"
+    // matches inflected forms like "фильмах"/"фильмов", but — unlike a substring
+    // match — does NOT match "осмотр" for the stem "смотр".
+    return msgTokens.some((_, i) => exTokens.every((et, j) => msgTokens[i + j]?.startsWith(et) ?? false));
   });
 }
 

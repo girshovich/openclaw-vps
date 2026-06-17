@@ -85,6 +85,20 @@ test('M1: exact whole-word example still activates', () => {
   assert.equal(result.length, 1, '"фильм" as standalone word must activate');
 });
 
+test('stem example activates on inflected Russian forms', () => {
+  const movies = makeStubSkill('movies', 'фильм');
+  registerSkill(movies);
+  // Prepositional/genitive plural — different tokens than the bare "фильм".
+  assert.equal(activateSkills('session-infl-a', 'В фильмах есть профиль Артема?').length, 1, '"фильмах" must activate the "фильм" stem');
+  assert.equal(activateSkills('session-infl-b', 'Ну в таком скилле выбора фильмов').length, 1, '"фильмов" must activate the "фильм" stem');
+});
+
+test('stem example "избран" activates on "избранное"', () => {
+  const movies = makeStubSkill('movies', 'избран');
+  registerSkill(movies);
+  assert.equal(activateSkills('session-fav', 'покажи избранное').length, 1, '"избранное" must activate the "избран" stem');
+});
+
 test('core tools stay present regardless of skill activation', () => {
   const echo = makeStubSkill('echo', 'echo this');
   registerSkill(echo);
