@@ -3,6 +3,14 @@ import type { LLMMessage, ToolCall } from '../llm/index.js';
 import { appendMessage, getSessionHistory, createSession, addSessionCost, getSessionCost } from '../memory/sqlite.js';
 import type { DbMessage } from '../memory/sqlite.js';
 
+// ── Skill registration ────────────────────────────────────────────────────────
+
+try {
+  registerMoviesSkill();
+} catch {
+  // API key not configured or DB unavailable; movies skill is skipped silently
+}
+
 // ── Budget limits ─────────────────────────────────────────────────────────────
 
 const SESSION_COST_LIMIT_USD = parseFloat(process.env['SESSION_COST_LIMIT_USD'] ?? '2.00');
@@ -22,6 +30,7 @@ import { getToolDefinitions, executeTool } from './tools.js';
 import type { ToolContext } from './tools.js';
 import { executeMemorySearch } from '../tools/memory-search.js';
 import { activateSkills } from '../skills/activator.js';
+import { registerMoviesSkill } from '../skills/movies/index.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve, dirname } from 'node:path';

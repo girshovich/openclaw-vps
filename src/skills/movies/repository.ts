@@ -60,6 +60,8 @@ export interface Repository {
   createWatchEvent(e: NewWatchEvent): WatchEvent;
   addFeedback(f: NewFeedback): Feedback;
   markFeedbackApplied(id: string): void;
+  deleteWatchEvent(id: string): void;
+  deleteFeedback(id: string): void;
   getWatchHistory(userId: string, range?: DateRange): WatchEntry[];
   getFeedbackContext(feedbackId: string): FeedbackContext | null;
 
@@ -312,6 +314,15 @@ export function createRepository(db: RecommenderDb): Repository {
 
     markFeedbackApplied(id: string): void {
       db.prepare(`UPDATE feedback SET applied_to_profile = 1 WHERE id = ?`).run(id);
+    },
+
+    deleteWatchEvent(id: string): void {
+      db.prepare(`DELETE FROM watch_event_viewer WHERE watch_event_id = ?`).run(id);
+      db.prepare(`DELETE FROM watch_event WHERE id = ?`).run(id);
+    },
+
+    deleteFeedback(id: string): void {
+      db.prepare(`DELETE FROM feedback WHERE id = ?`).run(id);
     },
 
     getWatchHistory(userId: string, range?: DateRange): WatchEntry[] {

@@ -7,6 +7,7 @@ export interface RecommendOptions {
   context?: string;
   excludeSeen?: boolean; // default true
   limit?: number; // default 10
+  runtimeMaxMin?: number; // ephemeral runtime cap (not persisted)
 }
 
 export interface RecommendationCandidate {
@@ -135,7 +136,7 @@ function isSuppressed(title: Title, suppressions: { scope: string; value: string
 export function createRecommendationService(repo: Repository): RecommendationService {
   return {
     async recommend(viewerIds, opts = {}) {
-      const { mediaType, context, excludeSeen = true, limit = 10 } = opts;
+      const { mediaType, context, excludeSeen = true, limit = 10, runtimeMaxMin } = opts;
 
       // Load all viewers
       const allUsers = repo.listUsers();
@@ -168,9 +169,14 @@ export function createRecommendationService(repo: Repository): RecommendationSer
       const candidates = repo.listTitles(mediaType);
 
       // Filter (spec §6.2 hard rules)
+      const runtimeConstraints =
+        runtimeMaxMin !== undefined
+          ? [...allConstraints, { type: 'max_runtime', value: `max_runtime:${runtimeMaxMin}` }]
+          : allConstraints;
+
       const survivors = candidates.filter((title) => {
         if (!isAgeAllowed(title, youngestAge)) return false;
-        if (violatesConstraints(title, allConstraints)) return false;
+        if (violatesConstraints(title, runtimeConstraints)) return false;
         if (isSuppressed(title, allSuppressions)) return false;
         if (excludeSeen && seenUnion.has(title.id)) return false;
         if (dismissedUnion.has(title.id)) return false;
